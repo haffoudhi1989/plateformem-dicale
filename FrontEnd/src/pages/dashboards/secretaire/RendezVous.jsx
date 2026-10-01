@@ -1,0 +1,1435 @@
+import React, { useEffect, useMemo, useState, useRef } from "react";
+import axios from "axios";
+import { useNavigate } from "react-router-dom";
+import {
+    CalendarDays,
+    Clock,
+    Stethoscope,
+    Plus,
+    Search,
+    CheckCircle2,
+    XCircle,
+    AlertCircle,
+    ChevronLeft,
+    ChevronRight,
+    Trash2,
+    Calendar,
+    Sparkles,
+    Check,
+    X,
+    Lock,
+    MapPin,
+    Video,
+    FileSpreadsheet,
+    Upload,
+    Printer,
+    FileUp,
+} from "lucide-react";
+
+const API_URL = "http://127.0.0.1:8000/api";
+
+// Plages horaires standards de consultation
+const DEFAULT_TIME_SLOTS = [
+    // Matin
+    "08:30", "09:00", "09:30", "10:00", "10:30", "11:00", "11:30", "12:00",
+    // Après-midi
+    "14:00", "14:30", "15:00", "15:30", "16:00", "16:30", "17:00", "17:30"
+];
+
+// Normaliser l'heure pour la comparaison (ex: "09:00:00" -> "09:00")
+const normalizeTime = (timeStr) => {
+    if (!timeStr) return "";
+    const parts = timeStr.trim().split(":");
+    if (parts.length >= 2) {
+        return `${parts[0].padStart(2, "0")}:${parts[1].padStart(2, "0")}`;
+    }
+    return timeStr;
+};
+
+export default function RendezVous() {
+    const navigate = useNavigate();
+    const fileInputRef = useRef(null);
+
+    // Données principales
+    const [rendezVous, setRendezVous] = useState([]);
+    const [medecins, setMedecins] = useState([]);
+    const [patients, setPatients] = useState([]);
+    const [loading, setLoading] = useState(true);
+
+    // Filtres & Recherche
+    const [searchQuery, setSearchQuery] = useState("");
+
+    /* Pagination du tableau : 10 rendez-vous par page */
+    const [page, setPage] = useState(1);
+    const PAR_PAGE = 10;
+    const [selectedMedecinFilter, setSelectedMedecinFilter] = useState("all");
+    const [selectedStatutFilter, setSelectedStatutFilter] = useState("all");
+    const [selectedDateFilter, setSelectedDateFilter] = useState(
+        () => new Date().toISOString().split("T")[0]
+    );
+
+    // La page « Rendez-vous & Planning » n'affiche qu'UN médecin à la fois :
+    // par défaut, le Dr. Ali Ben Salah (compte ahmed.bensalah@gmail.com) ;
+    // sinon le seul médecin du cabinet s'il n'y en a qu'un.
+    const MEDECIN_PAR_DEFAUT = "ahmed.bensalah@gmail.com";
+
+    const medecinUnique = medecins.length === 1 ? medecins[0] : null;
+
+    const medecinParDefaut =
+        medecins.find(
+            (m) =>
+                (m.email || "").trim().toLowerCase() === MEDECIN_PAR_DEFAUT
+        ) || medecinUnique;
+
+    useEffect(() => {
+        if (medecinParDefaut && selectedMedecinFilter === "all") {
+            setSelectedMedecinFilter(String(medecinParDefaut.id));
+        }
+    }, [medecinParDefaut, selectedMedecinFilter]);
+
+    // Modal de prise de rendez-vous
+    const [showModal, setShowModal] = useState(false);
+    const [saving, setSaving] = useState(false);
+    const [formError, setFormError] = useState("");
+    const [successMessage, setSuccessMessage] = useState("");
+
+    // Modal d'importation de fichier
+    const [showImportModal, setShowImportModal] = useState(false);
+    const [importFile, setImportFile] = useState(null);
+    const [importPreview, setImportPreview] = useState([]);
+    const [importing, setImporting] = useState(false);
+    const [importError, setImportError] = useState("");
+
+    // Formulaire de réservation
+    const initialFormData = {
+        medecin_id: "",
+        patient_id: "",
+        date_rdv: new Date().toISOString().split("T")[0],
+        heure_rdv: "",
+        motif: "",
+        statut: "Confirmé",
+        mode: "presentiel",
+    };
+    const [formData, setFormData] = useState(initialFormData);
+
+    // Le médecin associé est présélectionné dès l'ouverture du formulaire :
+    // la secrétaire n'a qu'un praticien, inutile de le choisir à la main.
+    useEffect(() => {
+        if (showModal && medecinUnique && !formData.medecin_id) {
+            setFormData((prev) => ({
+                ...prev,
+                medecin_id: String(medecinUnique.id),
+            }));
+        }
+    }, [showModal, medecinUnique, formData.medecin_id]);
+
+    // Chargement initial
+    useEffect(() => {
+        chargerDonnees();
+    }, []);
+
+    const getHeaders = () => {
+        const token = localStorage.getItem("token");
+        return {
+            Authorization: `Bearer ${token}`,
+            Accept: "application/json",
+        };
+    };
+
+    const chargerDonnees = async () => {
+        try {
+            setLoading(true);
+            const token = localStorage.getItem("token");
+            if (!token) {
+                navigate("/login");
+                return;
+            }
+
+            const headers = getHeaders();
+            const [resRdv, resMed, resPat] = await Promise.all([
+                axios.get(`${API_URL}/rendez-vous`, { headers }),
+                axios.get(`${API_URL}/medecins`, { headers }),
+                axios.get(`${API_URL}/patients`, { headers }),
+            ]);
+
+            setRendezVous(resRdv.data.data || []);
+            setMedecins(resMed.data.data || []);
+            setPatients(resPat.data.data || []);
+        } catch (error) {
+            console.error("Erreur chargement données secrétaire :", error);
+            if (error.response?.status === 401) {
+                localStorage.removeItem("token");
+                localStorage.removeItem("user");
+                navigate("/login");
+            }
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    // =====================================================
+    // CALCUL DES CRÉNEAUX DISPONIBLES DU MÉDECIN
+    // =====================================================
+    const creneauxDisponibilite = useMemo(() => {
+        if (!formData.medecin_id || !formData.date_rdv) {
+            return [];
+        }
+
+        const medecinRdvDuJour = rendezVous.filter((r) => {
+            const sameMedecin = String(r.medecin_id || r.medecin?.id) === String(formData.medecin_id);
+            const sameDate = String(r.date_rdv).split("T")[0] === String(formData.date_rdv);
+            const notCancelled = String(r.statut || "").toLowerCase() !== "annulé" && String(r.statut || "").toLowerCase() !== "annule";
+            return sameMedecin && sameDate && notCancelled;
+        });
+
+        const bookedTimes = medecinRdvDuJour.map((r) => normalizeTime(r.heure_rdv));
+
+        return DEFAULT_TIME_SLOTS.map((slot) => {
+            const isBooked = bookedTimes.includes(normalizeTime(slot));
+            const bookedRdv = isBooked
+                ? medecinRdvDuJour.find((r) => normalizeTime(r.heure_rdv) === normalizeTime(slot))
+                : null;
+
+            return {
+                time: slot,
+                isAvailable: !isBooked,
+                bookedWith: bookedRdv
+                    ? `${bookedRdv.patient?.prenom || ""} ${bookedRdv.patient?.nom || "Patient"}`.trim()
+                    : null,
+            };
+        });
+    }, [formData.medecin_id, formData.date_rdv, rendezVous]);
+
+    const totalDisponibles = useMemo(() => {
+        return creneauxDisponibilite.filter((c) => c.isAvailable).length;
+    }, [creneauxDisponibilite]);
+
+    // =====================================================
+    // EXPORTATION EXCEL / CSV
+    // =====================================================
+    const handleExportExcel = () => {
+        if (rendezVousFiltres.length === 0) {
+            alert("Aucun rendez-vous à exporter.");
+            return;
+        }
+
+        // Créer les lignes CSV avec encodage UTF-8 (avec BOM pour Excel)
+        const entetes = ["ID", "Patient", "Telephone", "Email", "Medecin", "Specialite", "Date RDV", "Heure", "Motif", "Statut"];
+        const lignes = rendezVousFiltres.map((r) => [
+            r.id,
+            `"${(r.patient?.prenom || "")} ${(r.patient?.nom || "")}"`.trim(),
+            `"${r.patient?.telephone || ""}"`,
+            `"${r.patient?.email || ""}"`,
+            `"Dr. ${(r.medecin?.prenom || "")} ${(r.medecin?.nom || "")}"`.trim(),
+            `"${r.medecin?.specialite?.nom || ""}"`,
+            r.date_rdv,
+            normalizeTime(r.heure_rdv),
+            `"${(r.motif || "Consultation").replace(/"/g, '""')}"`,
+            `"${r.statut || "Confirmé"}"`
+        ]);
+
+        const contenuCSV = "\uFEFF" + [entetes.join(";"), ...lignes.map((l) => l.join(";"))].join("\n");
+        const blob = new Blob([contenuCSV], { type: "text/csv;charset=utf-8;" });
+        const url = URL.createObjectURL(blob);
+        const lien = document.createElement("a");
+        const dateStr = new Date().toISOString().split("T")[0];
+        lien.setAttribute("href", url);
+        lien.setAttribute("download", `RendezVous_Cabinet_${dateStr}.csv`);
+        document.body.appendChild(lien);
+        lien.click();
+        document.body.removeChild(lien);
+
+        setSuccessMessage("Fichier Excel (CSV) exporté avec succès !");
+        setTimeout(() => setSuccessMessage(""), 4000);
+    };
+
+    // =====================================================
+    // EXPORTATION PDF / IMPRESSION
+    // =====================================================
+    const handleExportPDF = () => {
+        if (rendezVousFiltres.length === 0) {
+            alert("Aucun rendez-vous à exporter.");
+            return;
+        }
+
+        const dateStr = new Date().toLocaleDateString("fr-FR", {
+            weekday: "long",
+            year: "numeric",
+            month: "long",
+            day: "numeric",
+        });
+
+        const printWindow = window.open("", "_blank");
+        if (!printWindow) {
+            alert("Veuillez autoriser les fenêtres pop-up pour générer le PDF.");
+            return;
+        }
+
+        const htmlContent = `
+            <!DOCTYPE html>
+            <html lang="fr">
+            <head>
+                <meta charset="utf-8">
+                <title>Planning des Rendez-vous - Cabinet Médical</title>
+                <style>
+                    body {
+                        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+                        color: #1e293b;
+                        padding: 30px;
+                        margin: 0;
+                    }
+                    .header {
+                        display: flex;
+                        justify-content: space-between;
+                        align-items: center;
+                        border-bottom: 2px solid #7c3aed;
+                        padding-bottom: 15px;
+                        margin-bottom: 25px;
+                    }
+                    .title {
+                        font-size: 24px;
+                        font-weight: 800;
+                        color: #0f172a;
+                        margin: 0;
+                    }
+                    .subtitle {
+                        font-size: 12px;
+                        color: #64748b;
+                        margin-top: 4px;
+                    }
+                    .badge {
+                        background: #f5f3ff;
+                        color: #7c3aed;
+                        padding: 6px 14px;
+                        border-radius: 20px;
+                        font-size: 11px;
+                        font-weight: bold;
+                    }
+                    table {
+                        width: 100%;
+                        border-collapse: collapse;
+                        margin-top: 15px;
+                        font-size: 12px;
+                    }
+                    th {
+                        background-color: #f8fafc;
+                        color: #475569;
+                        text-transform: uppercase;
+                        font-size: 10px;
+                        font-weight: 700;
+                        letter-spacing: 0.5px;
+                        padding: 10px 12px;
+                        border-bottom: 1px solid #e2e8f0;
+                        text-align: left;
+                    }
+                    td {
+                        padding: 10px 12px;
+                        border-bottom: 1px solid #f1f5f9;
+                    }
+                    tr:nth-child(even) {
+                        background-color: #fafafa;
+                    }
+                    .status {
+                        display: inline-block;
+                        padding: 3px 8px;
+                        border-radius: 12px;
+                        font-size: 10px;
+                        font-weight: 700;
+                    }
+                    .status-confirme { background: #dcfce7; color: #15803d; }
+                    .status-attente { background: #fef3c7; color: #b45309; }
+                    .status-annule { background: #ffe4e6; color: #be123c; }
+                    .footer {
+                        margin-top: 30px;
+                        font-size: 11px;
+                        color: #94a3b8;
+                        text-align: right;
+                        border-top: 1px solid #e2e8f0;
+                        padding-top: 10px;
+                    }
+                    @media print {
+                        body { padding: 0; }
+                    }
+                </style>
+            </head>
+            <body>
+                <div class="header">
+                    <div>
+                        <h1 class="title">Planning des Rendez-vous</h1>
+                        <p class="subtitle">Cabinet Médical - Édité le ${dateStr}</p>
+                    </div>
+                    <div class="badge">
+                        ${rendezVousFiltres.length} RDV listé(s)
+                    </div>
+                </div>
+
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Patient</th>
+                            <th>Contact</th>
+                            <th>Médecin</th>
+                            <th>Date</th>
+                            <th>Heure</th>
+                            <th>Motif</th>
+                            <th>Statut</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        ${rendezVousFiltres.map((r) => {
+                            const st = (r.statut || "Confirmé").toLowerCase();
+                            const stClass = st.includes("confirm") ? "status-confirme" : st.includes("annul") ? "status-annule" : "status-attente";
+                            return `
+                                <tr>
+                                    <td><strong>${r.patient?.prenom || ""} ${r.patient?.nom || "Patient"}</strong></td>
+                                    <td>${r.patient?.telephone || r.patient?.email || "-"}</td>
+                                    <td>Dr. ${r.medecin?.prenom || ""} ${r.medecin?.nom || ""}</td>
+                                    <td>${r.date_rdv}</td>
+                                    <td><strong>${normalizeTime(r.heure_rdv)}</strong></td>
+                                    <td>${r.motif || "Consultation"}</td>
+                                    <td><span class="status ${stClass}">${r.statut || "Confirmé"}</span></td>
+                                </tr>
+                            `;
+                        }).join("")}
+                    </tbody>
+                </table>
+
+                <div class="footer">
+                    Document généré automatiquement par MedPlatform — Secrétariat Médical
+                </div>
+
+                <script>
+                    window.onload = function() {
+                        window.print();
+                    };
+                </script>
+            </body>
+            </html>
+        `;
+
+        printWindow.document.open();
+        printWindow.document.write(htmlContent);
+        printWindow.document.close();
+    };
+
+    // =====================================================
+    // IMPORTATION FICHIER EXCEL / CSV
+    // =====================================================
+    const handleFileSelect = (e) => {
+        const file = e.target.files?.[0];
+        if (!file) return;
+
+        setImportFile(file);
+        setImportError("");
+
+        const reader = new FileReader();
+        reader.onload = (evt) => {
+            const content = evt.target.result;
+            try {
+                const lines = content.split(/\r\n|\n/).filter((l) => l.trim().length > 0);
+                if (lines.length <= 1) {
+                    setImportError("Le fichier est vide ou ne contient que l'en-tête.");
+                    return;
+                }
+
+                const delimiter = lines[0].includes(";") ? ";" : ",";
+
+                const parsedRows = [];
+                for (let i = 1; i < lines.length; i++) {
+                    const cols = lines[i].split(delimiter).map((c) => c.replace(/^["']|["']$/g, "").trim());
+                    if (cols.length >= 3) {
+                        parsedRows.push({
+                            patientName: cols[0] || `Patient #${i}`,
+                            medecinName: cols[1] || "Dr. Assigné",
+                            date_rdv: cols[2] || new Date().toISOString().split("T")[0],
+                            heure_rdv: cols[3] || "09:00",
+                            motif: cols[4] || "Consultation",
+                            statut: cols[5] || "Confirmé",
+                        });
+                    }
+                }
+
+                setImportPreview(parsedRows);
+            } catch (err) {
+                console.error("Erreur lecture fichier :", err);
+                setImportError("Impossible de lire ce fichier. Format CSV ou texte requis.");
+            }
+        };
+
+        reader.readAsText(file);
+    };
+
+    const handleConfirmImport = async () => {
+        if (importPreview.length === 0) {
+            setImportError("Aucune ligne valide à importer.");
+            return;
+        }
+
+        try {
+            setImporting(true);
+            setImportError("");
+
+            const defaultMedecinId = medecins[0]?.id;
+            const defaultPatientId = patients[0]?.id;
+
+            if (!defaultMedecinId || !defaultPatientId) {
+                setImportError("Aucun médecin ou patient disponible dans le système pour rattacher les RDV.");
+                return;
+            }
+
+            const headers = getHeaders();
+
+            // Créer chaque RDV via l'API
+            let successCount = 0;
+            for (const row of importPreview) {
+                try {
+                    await axios.post(
+                        `${API_URL}/rendez-vous`,
+                        {
+                            medecin_id: defaultMedecinId,
+                            patient_id: defaultPatientId,
+                            date_rdv: row.date_rdv,
+                            heure_rdv: row.heure_rdv,
+                            motif: row.motif,
+                            statut: row.statut,
+                        },
+                        { headers }
+                    );
+                    successCount++;
+                } catch (err) {
+                    console.error("Ligne non importée :", row, err);
+                }
+            }
+
+            setSuccessMessage(`${successCount} rendez-vous importé(s) avec succès depuis le fichier !`);
+            setTimeout(() => setSuccessMessage(""), 5000);
+
+            await chargerDonnees();
+            setShowImportModal(false);
+            setImportFile(null);
+            setImportPreview([]);
+        } catch (err) {
+            console.error("Erreur import :", err);
+            setImportError("Erreur lors de l'importation.");
+        } finally {
+            setImporting(false);
+        }
+    };
+
+    // =====================================================
+    // SOUMISSION D'UN RENDEZ-VOUS MANUEL
+    // =====================================================
+    const handlePrendreRendezVous = async (e) => {
+        e.preventDefault();
+        setFormError("");
+
+        if (!formData.medecin_id) {
+            setFormError("Veuillez sélectionner un médecin.");
+            return;
+        }
+        if (!formData.patient_id) {
+            setFormError("Veuillez sélectionner un patient.");
+            return;
+        }
+        if (!formData.date_rdv) {
+            setFormError("Veuillez choisir une date pour le rendez-vous.");
+            return;
+        }
+        if (!formData.heure_rdv) {
+            setFormError("Veuillez sélectionner un créneau horaire disponible.");
+            return;
+        }
+
+        try {
+            setSaving(true);
+            const token = localStorage.getItem("token");
+            if (!token) {
+                navigate("/login");
+                return;
+            }
+
+            await axios.post(
+                `${API_URL}/rendez-vous`,
+                {
+                    medecin_id: formData.medecin_id,
+                    patient_id: formData.patient_id,
+                    date_rdv: formData.date_rdv,
+                    heure_rdv: formData.heure_rdv,
+                    motif: formData.motif || "Consultation",
+                    statut: formData.statut || "Confirmé",
+                    mode: formData.mode || "presentiel",
+                },
+                {
+                    headers: {
+                        Authorization: `Bearer ${token}`,
+                        Accept: "application/json",
+                        "Content-Type": "application/json",
+                    },
+                }
+            );
+
+            setSuccessMessage("Le rendez-vous a été enregistré avec succès selon les disponibilités du praticien !");
+            setTimeout(() => setSuccessMessage(""), 5000);
+
+            await chargerDonnees();
+            setShowModal(false);
+            setFormData({
+                medecin_id: "",
+                patient_id: "",
+                date_rdv: new Date().toISOString().split("T")[0],
+                heure_rdv: "",
+                motif: "",
+                statut: "Confirmé",
+                mode: "presentiel",
+            });
+        } catch (err) {
+            console.error("Erreur création RDV :", err);
+            if (err.response?.data?.errors) {
+                const msgs = Object.values(err.response.data.errors).flat().join(" ");
+                setFormError(msgs);
+            } else {
+                setFormError(err.response?.data?.message || "Erreur lors de l'enregistrement du rendez-vous.");
+            }
+        } finally {
+            setSaving(false);
+        }
+    };
+
+    // =====================================================
+    // CHANGER LE STATUT D'UN RDV
+    // =====================================================
+    const handleUpdateStatut = async (rdvId, nouveauStatut) => {
+        try {
+            await axios.put(
+                `${API_URL}/rendez-vous/${rdvId}`,
+                { statut: nouveauStatut },
+                { headers: getHeaders() }
+            );
+
+            setRendezVous((prev) =>
+                prev.map((r) => (r.id === rdvId ? { ...r, statut: nouveauStatut } : r))
+            );
+        } catch (error) {
+            console.error("Erreur mise à jour statut :", error);
+        }
+    };
+
+    // =====================================================
+    // SUPPRESSION D'UN RDV
+    // =====================================================
+    const handleDeleteRdv = async (rdvId) => {
+        if (!window.confirm("Êtes-vous sûr de vouloir supprimer ce rendez-vous ?")) {
+            return;
+        }
+
+        try {
+            await axios.delete(`${API_URL}/rendez-vous/${rdvId}`, { headers: getHeaders() });
+            setRendezVous((prev) => prev.filter((r) => r.id !== rdvId));
+        } catch (error) {
+            console.error("Erreur suppression RDV :", error);
+        }
+    };
+
+    // =====================================================
+    // FILTRAGE
+    // =====================================================
+    const rendezVousFiltres = useMemo(() => {
+        return rendezVous.filter((rdv) => {
+            const patientName = `${rdv.patient?.prenom || ""} ${rdv.patient?.nom || ""}`.toLowerCase();
+            const medecinName = `${rdv.medecin?.prenom || ""} ${rdv.medecin?.nom || ""}`.toLowerCase();
+            const motif = (rdv.motif || "").toLowerCase();
+            const query = searchQuery.toLowerCase();
+
+            const matchSearch =
+                !query ||
+                patientName.includes(query) ||
+                medecinName.includes(query) ||
+                motif.includes(query);
+
+            const matchMedecin =
+                selectedMedecinFilter === "all" ||
+                String(rdv.medecin_id || rdv.medecin?.id) === String(selectedMedecinFilter);
+
+            const matchStatut =
+                selectedStatutFilter === "all" ||
+                String(rdv.statut || "").toLowerCase() === selectedStatutFilter.toLowerCase();
+
+            const matchDate =
+                !selectedDateFilter ||
+                String(rdv.date_rdv).split("T")[0] === String(selectedDateFilter);
+
+            return matchSearch && matchMedecin && matchStatut && matchDate;
+        });
+    }, [rendezVous, searchQuery, selectedMedecinFilter, selectedStatutFilter, selectedDateFilter]);
+
+    /* =====================================================
+       PAGINATION
+    ===================================================== */
+    const totalPages = Math.max(1, Math.ceil(rendezVousFiltres.length / PAR_PAGE));
+    const pageCourante = Math.min(page, totalPages);
+    const debutPage = (pageCourante - 1) * PAR_PAGE;
+    const rdvPage = rendezVousFiltres.slice(debutPage, debutPage + PAR_PAGE);
+
+    /* Numéros de page affichés (fenêtre glissante de 5) */
+    const numerosPages = Array.from({ length: totalPages }, (_, i) => i + 1).slice(
+        Math.max(0, Math.min(pageCourante - 3, totalPages - 5)),
+        Math.max(0, Math.min(pageCourante - 3, totalPages - 5)) + 5
+    );
+
+    const statsCount = useMemo(() => {
+        return {
+            total: rendezVous.length,
+            confirmes: rendezVous.filter((r) => String(r.statut || "").toLowerCase().includes("confirm")).length,
+            attente: rendezVous.filter((r) => String(r.statut || "").toLowerCase().includes("attente")).length,
+            annules: rendezVous.filter((r) => String(r.statut || "").toLowerCase().includes("annul")).length,
+        };
+    }, [rendezVous]);
+
+    if (loading) {
+        return (
+            <div className="flex items-center justify-center py-20">
+                <div className="bg-white border border-slate-200/80 rounded-3xl p-8 shadow-xl flex flex-col items-center text-center">
+                    <div className="w-12 h-12 border-4 border-violet-600 border-t-transparent rounded-full animate-spin mb-4" />
+                    <p className="text-sm font-bold text-slate-700">Chargement des rendez-vous et disponibilités...</p>
+                </div>
+            </div>
+        );
+    }
+
+    return (
+        <div className="p-4 md:p-8 space-y-6 max-w-7xl mx-auto">
+            {/* EN-TÊTE SUPÉRIEUR & ACTIONS FICHIERS EXCEL / PDF — BANNIÈRE VERRE */}
+            <div className="relative overflow-hidden rounded-2xl border border-white/50 bg-white/60 backdrop-blur-md shadow-sm px-5 py-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                <div className="absolute -top-10 -right-8 h-32 w-32 rounded-full bg-emerald-200/30 blur-2xl pointer-events-none" />
+                <div className="relative">
+                    <div className="flex items-center gap-2 mb-1">
+                        <button
+                            type="button"
+                            onClick={() => navigate("/secretaire/dashboard")}
+                            className="inline-flex items-center gap-1 text-xs font-bold text-slate-500 hover:text-violet-600 transition"
+                        >
+                            <ChevronLeft size={16} />
+                            Dashboard
+                        </button>
+                        <span className="text-slate-300">•</span>
+                        <span className="text-[11px] font-bold uppercase tracking-wider text-violet-600">
+                            Secrétariat Médical
+                        </span>
+                    </div>
+                    <h1 className="text-xl font-bold text-slate-900">
+                        Gestion des Rendez-vous
+                    </h1>
+                    <p className="text-sm text-slate-500 mt-0.5">
+                        Prise de rendez-vous selon disponibilités, exports & imports de fichiers
+                    </p>
+                </div>
+
+                {/* BOUTONS D'ACTIONS PRINCIPAUX (EXCEL, PDF, IMPORT, NOUVEAU RDV) */}
+                <div className="relative flex flex-wrap items-center gap-2.5">
+                    {/* Bouton Export Excel */}
+                    <button
+                        type="button"
+                        onClick={handleExportExcel}
+                        title="Télécharger la liste sous format Excel / CSV"
+                        className="inline-flex items-center gap-2 px-3.5 py-2.5 rounded-2xl bg-white hover:bg-emerald-50 border border-slate-200 hover:border-emerald-300 text-emerald-700 font-bold text-xs shadow-sm transition-all active:scale-95 cursor-pointer"
+                    >
+                        <FileSpreadsheet size={15} className="text-emerald-600" />
+                        <span>Export Excel</span>
+                    </button>
+
+                    {/* Bouton Export PDF */}
+                    <button
+                        type="button"
+                        onClick={handleExportPDF}
+                        title="Imprimer ou enregistrer le rapport en PDF"
+                        className="inline-flex items-center gap-2 px-3.5 py-2.5 rounded-2xl bg-white hover:bg-rose-50 border border-slate-200 hover:border-rose-300 text-rose-700 font-bold text-xs shadow-sm transition-all active:scale-95 cursor-pointer"
+                    >
+                        <Printer size={15} className="text-rose-600" />
+                        <span>Imprimer / PDF</span>
+                    </button>
+
+                 
+
+                    {/* Bouton Prendre un RDV */}
+                    <button
+                        type="button"
+                        onClick={() => {
+                            setFormError("");
+                            setFormData(initialFormData);
+                            setShowModal(true);
+                        }}
+                        className="inline-flex items-center gap-2 px-5 py-2.5 rounded-2xl bg-violet-600 hover:bg-violet-500 text-white font-bold text-xs shadow-lg shadow-violet-500/25 transition-all hover:scale-105 active:scale-95 cursor-pointer"
+                    >
+                        <Plus size={16} />
+                        Prendre un RDV
+                    </button>
+                </div>
+            </div>
+
+            {/* NOTIFICATION SUCCÈS */}
+            {successMessage && (
+                <div className="p-4 rounded-2xl bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs font-bold flex items-center gap-3 animate-fade">
+                    <CheckCircle2 size={18} className="text-emerald-600 shrink-0" />
+                    <span>{successMessage}</span>
+                </div>
+            )}
+
+            {/* CADRES DE STATISTIQUES RAPIDES */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+                <div className="bg-white border border-slate-200/80 rounded-3xl p-5 shadow-sm">
+                    <p className="text-xs font-bold text-slate-400 uppercase tracking-wider">Total RDV</p>
+                    <p className="text-2xl font-black text-slate-900 mt-1">{statsCount.total}</p>
+                </div>
+                <div className="bg-white border border-slate-200/80 rounded-3xl p-5 shadow-sm">
+                    <p className="text-xs font-bold text-emerald-600 uppercase tracking-wider">Confirmés</p>
+                    <p className="text-2xl font-black text-emerald-700 mt-1">{statsCount.confirmes}</p>
+                </div>
+                <div className="bg-white border border-slate-200/80 rounded-3xl p-5 shadow-sm">
+                    <p className="text-xs font-bold text-amber-600 uppercase tracking-wider">En attente</p>
+                    <p className="text-2xl font-black text-amber-700 mt-1">{statsCount.attente}</p>
+                </div>
+                <div className="bg-white border border-slate-200/80 rounded-3xl p-5 shadow-sm">
+                    <p className="text-xs font-bold text-rose-600 uppercase tracking-wider">Annulés</p>
+                    <p className="text-2xl font-black text-rose-700 mt-1">{statsCount.annules}</p>
+                </div>
+            </div>
+
+            {/* BARRE DE RECHERCHE ET FILTRES */}
+            <div className="bg-white border border-slate-200/80 rounded-3xl p-4 md:p-5 shadow-sm space-y-4">
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                    <div className="relative">
+                        <Search size={16} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
+                        <input
+                            type="text"
+                            placeholder="Rechercher patient, médecin..."
+                            value={searchQuery}
+                                        onChange={(e) => {
+                                            setSearchQuery(e.target.value);
+                                            setPage(1);
+                                        }}
+                            className="w-full pl-10 pr-4 py-2.5 bg-slate-50 border border-slate-200/80 rounded-2xl text-xs font-medium focus:outline-none focus:border-violet-500 focus:bg-white transition"
+                        />
+                    </div>
+
+                    <div className="relative">
+                        <select
+                            value={selectedMedecinFilter}
+                                        onChange={(e) => {
+                                            setSelectedMedecinFilter(e.target.value);
+                                            setPage(1);
+                                        }}
+                            className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200/80 rounded-2xl text-xs font-medium focus:outline-none focus:border-violet-500 focus:bg-white transition text-slate-700"
+                        >
+                            {/* Un seul médecin affiché à la fois : pas d'option
+                                « Tous les médecins » */}
+                            {medecins.map((m) => (
+                                <option key={m.id} value={m.id}>
+                                    Dr. {m.prenom} {m.nom} ({m.specialite?.nom || "Médecin"})
+                                </option>
+                            ))}
+                        </select>
+                    </div>
+
+                    <div className="relative">
+                        <select
+                            value={selectedStatutFilter}
+                                        onChange={(e) => {
+                                            setSelectedStatutFilter(e.target.value);
+                                            setPage(1);
+                                        }}
+                            className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200/80 rounded-2xl text-xs font-medium focus:outline-none focus:border-violet-500 focus:bg-white transition text-slate-700"
+                        >
+                            <option value="all">Tous les statuts</option>
+                            <option value="Confirmé">Confirmé</option>
+                            <option value="En attente">En attente</option>
+                            <option value="Terminé">Terminé</option>
+                            <option value="Annulé">Annulé</option>
+                        </select>
+                    </div>
+
+                    <div className="relative">
+                        <input
+                            type="date"
+                            value={selectedDateFilter}
+                                        onChange={(e) => {
+                                            setSelectedDateFilter(e.target.value);
+                                            setPage(1);
+                                        }}
+                            className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200/80 rounded-2xl text-xs font-medium focus:outline-none focus:border-violet-500 focus:bg-white transition text-slate-700"
+                        />
+                    </div>
+                </div>
+
+                {(searchQuery || selectedMedecinFilter !== "all" || selectedStatutFilter !== "all" || selectedDateFilter) && (
+                    <div className="flex items-center justify-between text-xs text-slate-500 pt-2 border-t border-slate-100">
+                        <span>{rendezVousFiltres.length} résultat(s) trouvé(s)</span>
+                        <button
+                            type="button"
+                            onClick={() => {
+                                setSearchQuery("");
+                    setPage(1);
+                                setSelectedMedecinFilter("all");
+                                setSelectedStatutFilter("all");
+                                setSelectedDateFilter("");
+                            }}
+                            className="text-violet-600 font-bold hover:underline"
+                        >
+                            Réinitialiser les filtres
+                        </button>
+                    </div>
+                )}
+            </div>
+
+            {/* TABLEAU DES RENDEZ-VOUS */}
+            <div className="bg-white border border-slate-200/80 rounded-3xl shadow-sm overflow-hidden">
+                {rendezVousFiltres.length === 0 ? (
+                    <div className="p-12 text-center">
+                        <div className="w-16 h-16 rounded-3xl bg-violet-50 text-violet-600 flex items-center justify-center mx-auto mb-3">
+                            <CalendarDays size={28} />
+                        </div>
+                        <h3 className="text-base font-black text-slate-800">Aucun rendez-vous trouvé</h3>
+                        <p className="text-xs text-slate-400 mt-1 max-w-sm mx-auto">
+                            Aucun rendez-vous ne correspond à vos critères actuels. Cliquez sur "Prendre un RDV" ou importez un fichier.
+                        </p>
+                    </div>
+                ) : (
+                    <div className="overflow-x-auto">
+                        <table className="w-full text-left border-collapse">
+                            <thead>
+                                <tr className="border-b border-slate-100 bg-slate-50/70 text-[11px] font-extrabold uppercase tracking-wider text-slate-400">
+                                    <th className="px-6 py-4">Patient</th>
+                                    <th className="px-6 py-4">Médecin</th>
+                                        <th className="px-6 py-4">Date & Heure</th>
+                                        <th className="px-6 py-4">Type</th>
+                                        <th className="px-6 py-4">Motif</th>
+                                    <th className="px-6 py-4">Statut</th>
+                                    <th className="px-6 py-4 text-right">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-100 text-xs">
+                                {rdvPage.map((rdv) => {
+                                    const statut = (rdv.statut || "En attente").toLowerCase();
+                                    const isConfirme = statut.includes("confirm");
+                                    const isAnnule = statut.includes("annul");
+                                    const isTermine = statut.includes("termin");
+
+                                    return (
+                                        <tr key={rdv.id} className="hover:bg-slate-50/80 transition-colors">
+                                            <td className="px-6 py-4">
+                                                <div className="flex items-center gap-3">
+                                                    <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-violet-600 to-indigo-600 text-white flex items-center justify-center font-bold text-xs shadow-sm">
+                                                        {rdv.patient?.prenom?.charAt(0)?.toUpperCase() || "P"}
+                                                    </div>
+                                                    <div>
+                                                        <p className="font-bold text-slate-800">
+                                                            {rdv.patient?.prenom} {rdv.patient?.nom}
+                                                        </p>
+                                                        <p className="text-[10px] text-slate-400 font-medium">
+                                                            {rdv.patient?.telephone || rdv.patient?.email || "Patient"}
+                                                        </p>
+                                                    </div>
+                                                </div>
+                                            </td>
+
+                                            <td className="px-6 py-4">
+                                                <div className="flex items-center gap-2">
+                                                    <Stethoscope size={14} className="text-violet-600 shrink-0" />
+                                                    <span className="font-bold text-slate-700">
+                                                        Dr. {rdv.medecin?.prenom} {rdv.medecin?.nom}
+                                                    </span>
+                                                </div>
+                                                {rdv.medecin?.specialite && (
+                                                    <span className="text-[10px] text-slate-400 block pl-5">
+                                                        {rdv.medecin.specialite.nom}
+                                                    </span>
+                                                )}
+                                            </td>
+
+                                            <td className="px-6 py-4">
+                                                <div className="flex items-center gap-2 font-bold text-slate-800">
+                                                    <Calendar size={13} className="text-slate-400" />
+                                                    <span>{rdv.date_rdv}</span>
+                                                </div>
+                                                <div className="flex items-center gap-2 text-[11px] text-slate-500 font-semibold mt-0.5">
+                                                    <Clock size={12} className="text-slate-400" />
+                                                    <span>{normalizeTime(rdv.heure_rdv)}</span>
+                                                </div>
+                                            </td>
+
+                                            <td className="px-6 py-4">
+                                                {rdv.mode === "video" ? (
+                                                    <div>
+                                                        <span className="inline-flex items-center gap-1.5 rounded-full bg-sky-50 text-sky-700 border border-sky-200 px-3 py-1 text-[11px] font-bold">
+                                                            <Video size={12} /> Vidéo
+                                                        </span>
+                                                        <a
+                                                            href="https://meet.google.com/"
+                                                            target="_blank"
+                                                            rel="noreferrer"
+                                                            className="mt-1.5 flex items-center gap-1 text-[10px] font-bold text-sky-600 hover:text-sky-800"
+                                                        >
+                                                            <Video size={11} />
+                                                            Rejoindre la visio
+                                                        </a>
+                                                    </div>
+                                                ) : (
+                                                    <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 px-3 py-1 text-[11px] font-bold">
+                                                        <MapPin size={12} /> Présentiel
+                                                    </span>
+                                                )}
+                                            </td>
+
+                                            <td className="px-6 py-4 text-slate-600 font-medium max-w-xs truncate">
+                                                {rdv.motif || "Consultation standard"}
+                                            </td>
+
+                                            <td className="px-6 py-4">
+                                                <span
+                                                    className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] font-bold border ${
+                                                        isConfirme
+                                                            ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                                                            : isAnnule
+                                                            ? "bg-rose-50 text-rose-700 border-rose-200"
+                                                            : isTermine
+                                                            ? "bg-violet-50 text-violet-700 border-violet-200"
+                                                            : "bg-amber-50 text-amber-700 border-amber-200"
+                                                    }`}
+                                                >
+                                                    {isConfirme && <CheckCircle2 size={12} />}
+                                                    {isAnnule && <XCircle size={12} />}
+                                                    {!isConfirme && !isAnnule && <Clock size={12} />}
+                                                    {rdv.statut || "En attente"}
+                                                </span>
+                                            </td>
+
+                                            <td className="px-6 py-4 text-right">
+                                                <div className="inline-flex items-center gap-1">
+                                                    {!isConfirme && (
+                                                        <button
+                                                            type="button"
+                                                            title="Confirmer"
+                                                            onClick={() => handleUpdateStatut(rdv.id, "Confirmé")}
+                                                            className="w-8 h-8 rounded-xl bg-emerald-50 text-emerald-600 hover:bg-emerald-600 hover:text-white transition flex items-center justify-center cursor-pointer"
+                                                        >
+                                                            <Check size={14} />
+                                                        </button>
+                                                    )}
+                                                    {!isAnnule && (
+                                                        <button
+                                                            type="button"
+                                                            title="Annuler"
+                                                            onClick={() => handleUpdateStatut(rdv.id, "Annulé")}
+                                                            className="w-8 h-8 rounded-xl bg-rose-50 text-rose-600 hover:bg-rose-600 hover:text-white transition flex items-center justify-center cursor-pointer"
+                                                        >
+                                                            <X size={14} />
+                                                        </button>
+                                                    )}
+                                                    <button
+                                                        type="button"
+                                                        title="Supprimer"
+                                                        onClick={() => handleDeleteRdv(rdv.id)}
+                                                        className="w-8 h-8 rounded-xl bg-slate-100 text-slate-500 hover:bg-rose-600 hover:text-white transition flex items-center justify-center cursor-pointer"
+                                                    >
+                                                        <Trash2 size={14} />
+                                                    </button>
+                                                </div>
+                                            </td>
+                                        </tr>
+                                    );
+                                })}
+                            </tbody>
+                        </table>
+                    </div>
+                )}
+
+                {/* PAGINATION */}
+                {!loading && totalPages > 1 && (
+                    <div className="flex flex-col sm:flex-row items-center justify-between gap-3 px-6 py-4 border-t border-slate-100 bg-slate-50/60">
+                        <p className="text-[11px] font-semibold text-slate-500">
+                            Affichage de {debutPage + 1} à {debutPage + rdvPage.length} sur {rendezVousFiltres.length} rendez-vous
+                        </p>
+
+                        <div className="flex items-center gap-1.5">
+                            <button
+                                type="button"
+                                onClick={() => setPage(Math.max(1, pageCourante - 1))}
+                                disabled={pageCourante === 1}
+                                className="inline-flex items-center gap-1 px-3 py-2 rounded-xl border border-slate-200 bg-white text-xs font-bold text-slate-600 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed transition cursor-pointer"
+                            >
+                                <ChevronLeft size={14} />
+                                Précédent
+                            </button>
+
+                            {numerosPages.map((p) => (
+                                <button
+                                    key={p}
+                                    type="button"
+                                    onClick={() => setPage(p)}
+                                    aria-current={p === pageCourante ? "page" : undefined}
+                                    className={`w-8 h-8 rounded-xl text-xs font-bold transition cursor-pointer ${
+                                        p === pageCourante
+                                            ? "bg-violet-600 text-white shadow-sm"
+                                            : "bg-white border border-slate-200 text-slate-600 hover:bg-slate-50"
+                                    }`}
+                                >
+                                    {p}
+                                </button>
+                            ))}
+
+                            <button
+                                type="button"
+                                onClick={() => setPage(Math.min(totalPages, pageCourante + 1))}
+                                disabled={pageCourante === totalPages}
+                                className="inline-flex items-center gap-1 px-3 py-2 rounded-xl border border-slate-200 bg-white text-xs font-bold text-slate-600 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed transition cursor-pointer"
+                            >
+                                Suivant
+                                <ChevronRight size={14} />
+                            </button>
+                        </div>
+                    </div>
+                )}
+            </div>
+
+            {/* =====================================================
+                MODAL 1 : IMPORTER UN FICHIER EXCEL / CSV
+            ===================================================== */}
+            {showImportModal && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 backdrop-blur-sm p-4 overflow-y-auto">
+                    <div className="bg-white border border-slate-200 rounded-3xl shadow-2xl max-w-xl w-full p-6 md:p-8 my-8 relative animate-fade">
+                        <div className="flex items-start justify-between pb-5 border-b border-slate-100">
+                            <div>
+                                <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-indigo-50 text-indigo-700 text-xs font-bold mb-1.5">
+                                    <FileUp size={13} />
+                                    Importation de Données
+                                </div>
+                                <h2 className="text-xl md:text-2xl font-black text-slate-900 tracking-tight">
+                                    Charger un fichier Excel / CSV
+                                </h2>
+                                <p className="text-xs text-slate-400 mt-0.5">
+                                    Importez des rendez-vous à partir d'un fichier (.csv, .xlsx, .txt)
+                                </p>
+                            </div>
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    setShowImportModal(false);
+                                    setImportFile(null);
+                                    setImportPreview([]);
+                                }}
+                                className="w-9 h-9 rounded-2xl bg-slate-100 hover:bg-slate-200 text-slate-500 flex items-center justify-center transition cursor-pointer"
+                            >
+                                <X size={18} />
+                            </button>
+                        </div>
+
+                        {importError && (
+                            <div className="mt-4 p-3.5 rounded-2xl bg-rose-50 border border-rose-200 text-rose-700 text-xs font-bold flex items-center gap-2">
+                                <AlertCircle size={16} className="shrink-0" />
+                                <span>{importError}</span>
+                            </div>
+                        )}
+
+                        <div className="mt-6 space-y-5">
+                            {/* Zone de téléversement */}
+                            <div
+                                onClick={() => fileInputRef.current?.click()}
+                                className="border-2 border-dashed border-slate-300 hover:border-violet-500 bg-slate-50 hover:bg-violet-50/40 rounded-3xl p-8 text-center cursor-pointer transition-all flex flex-col items-center justify-center"
+                            >
+                                <input
+                                    type="file"
+                                    ref={fileInputRef}
+                                    onChange={handleFileSelect}
+                                    accept=".csv, .xlsx, .xls, .txt"
+                                    className="hidden"
+                                />
+                                <div className="w-14 h-14 rounded-2xl bg-indigo-50 text-indigo-600 flex items-center justify-center mb-3">
+                                    <Upload size={24} />
+                                </div>
+                                <p className="text-xs font-bold text-slate-700">
+                                    {importFile ? importFile.name : "Cliquez ou glissez votre fichier ici"}
+                                </p>
+                                <p className="text-[11px] text-slate-400 mt-1">
+                                    Formats supportés : CSV, TXT, Excel (.csv)
+                                </p>
+                            </div>
+
+                            {/* Aperçu des lignes détectées */}
+                            {importPreview.length > 0 && (
+                                <div className="space-y-2">
+                                    <div className="flex items-center justify-between text-xs font-bold text-slate-700">
+                                        <span>Aperçu des données ({importPreview.length} ligne(s))</span>
+                                        <span className="text-emerald-600">✓ Prêt à importer</span>
+                                    </div>
+                                    <div className="max-h-44 overflow-y-auto rounded-2xl border border-slate-200 bg-slate-50/50 p-2 divide-y divide-slate-100 text-[11px]">
+                                        {importPreview.slice(0, 10).map((row, idx) => (
+                                            <div key={idx} className="py-1.5 px-2 flex items-center justify-between">
+                                                <span className="font-bold text-slate-800">{row.patientName}</span>
+                                                <span className="text-slate-500">{row.date_rdv} à {row.heure_rdv}</span>
+                                                <span className="font-semibold text-violet-700">{row.motif}</span>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            )}
+
+                            {/* Actions Modal Import */}
+                            <div className="pt-4 border-t border-slate-100 flex items-center justify-end gap-3">
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        setShowImportModal(false);
+                                        setImportFile(null);
+                                        setImportPreview([]);
+                                    }}
+                                    className="px-5 py-2.5 rounded-2xl bg-slate-100 hover:bg-slate-200 text-slate-600 text-xs font-bold transition cursor-pointer"
+                                >
+                                    Annuler
+                                </button>
+                                <button
+                                    type="button"
+                                    disabled={importing || importPreview.length === 0}
+                                    onClick={handleConfirmImport}
+                                    className="inline-flex items-center gap-2 px-6 py-2.5 rounded-2xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-bold text-xs shadow-lg shadow-indigo-500/25 transition cursor-pointer"
+                                >
+                                    {importing ? "Importation..." : `Importer ${importPreview.length} rendez-vous`}
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* =====================================================
+                MODAL 2 : PRENDRE UN RDV SELON DISPONIBILITÉ MÉDECIN
+            ===================================================== */}
+            {showModal && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 backdrop-blur-sm p-4 overflow-y-auto">
+                    <div className="bg-white border border-slate-200 rounded-3xl shadow-2xl max-w-2xl w-full p-6 md:p-8 my-8 relative animate-fade">
+                        <div className="flex items-start justify-between pb-5 border-b border-slate-100">
+                            <div>
+                                <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-violet-50 text-violet-700 text-xs font-bold mb-1.5">
+                                    <Sparkles size={13} />
+                                    Réservation Assistée
+                                </div>
+                                <h2 className="text-xl md:text-2xl font-black text-slate-900 tracking-tight">
+                                    Prendre un rendez-vous
+                                </h2>
+                                <p className="text-xs text-slate-400 mt-0.5">
+                                    Sélectionnez le praticien, le patient et un créneau horaire disponible.
+                                </p>
+                            </div>
+                            <button
+                                type="button"
+                                onClick={() => setShowModal(false)}
+                                className="w-9 h-9 rounded-2xl bg-slate-100 hover:bg-slate-200 text-slate-500 flex items-center justify-center transition cursor-pointer"
+                            >
+                                <X size={18} />
+                            </button>
+                        </div>
+
+                        {formError && (
+                            <div className="mt-4 p-3.5 rounded-2xl bg-rose-50 border border-rose-200 text-rose-700 text-xs font-bold flex items-center gap-2">
+                                <AlertCircle size={16} className="shrink-0" />
+                                <span>{formError}</span>
+                            </div>
+                        )}
+
+                        <form onSubmit={handlePrendreRendezVous} className="mt-6 space-y-6">
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                <div>
+                                    <label className="block text-xs font-bold text-slate-700 mb-1.5">
+                                        Médecin Praticien *
+                                    </label>
+                                    <select
+                                        value={formData.medecin_id}
+                                        onChange={(e) => {
+                                            setFormData({ ...formData, medecin_id: e.target.value, heure_rdv: "" });
+                                        }}
+                                        required
+                                        className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-2xl text-xs font-medium focus:outline-none focus:border-violet-500 focus:bg-white transition"
+                                    >
+                                        {/* Un seul médecin dans le cabinet : il est
+                                            présélectionné, pas de choix vide. */}
+                                        {medecins.length !== 1 && (
+                                            <option value="">-- Choisir un médecin --</option>
+                                        )}
+                                        {medecins.map((m) => (
+                                            <option key={m.id} value={m.id}>
+                                                Dr. {m.prenom} {m.nom} {m.specialite ? `(${m.specialite.nom})` : ""}
+                                            </option>
+                                        ))}
+                                    </select>
+                                </div>
+
+                                <div>
+                                    <label className="block text-xs font-bold text-slate-700 mb-1.5">
+                                        Patient concerné *
+                                    </label>
+                                    <select
+                                        value={formData.patient_id}
+                                        onChange={(e) => setFormData({ ...formData, patient_id: e.target.value })}
+                                        required
+                                        className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-2xl text-xs font-medium focus:outline-none focus:border-violet-500 focus:bg-white transition"
+                                    >
+                                        <option value="">-- Choisir un patient --</option>
+                                        {patients.map((p) => (
+                                            <option key={p.id} value={p.id}>
+                                                {p.prenom} {p.nom} {p.telephone ? `(${p.telephone})` : ""}
+                                            </option>
+                                        ))}
+                                    </select>
+                                </div>
+                            </div>
+
+                            <div>
+                                <label className="block text-xs font-bold text-slate-700 mb-1.5">
+                                    Date de la consultation *
+                                </label>
+                                <input
+                                    type="date"
+                                    min={new Date().toISOString().split("T")[0]}
+                                    value={formData.date_rdv}
+                                    onChange={(e) => {
+                                        setFormData({ ...formData, date_rdv: e.target.value, heure_rdv: "" });
+                                    }}
+                                    required
+                                    className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-2xl text-xs font-medium focus:outline-none focus:border-violet-500 focus:bg-white transition"
+                                />
+                            </div>
+
+                            <div>
+                                <div className="flex items-center justify-between mb-2">
+                                    <label className="text-xs font-bold text-slate-700">
+                                        Créneaux horaires & Disponibilités *
+                                    </label>
+                                    {formData.medecin_id && formData.date_rdv && (
+                                        <span className="text-[11px] font-bold text-emerald-600 bg-emerald-50 px-2.5 py-0.5 rounded-full">
+                                            {totalDisponibles} créneaux libres
+                                        </span>
+                                    )}
+                                </div>
+
+                                {!formData.medecin_id ? (
+                                    <div className="p-5 rounded-2xl bg-slate-50 border border-dashed border-slate-200 text-center text-xs text-slate-400">
+                                        Veuillez d'abord sélectionner un médecin pour afficher ses disponibilités.
+                                    </div>
+                                ) : (
+                                    <div className="space-y-3">
+                                        <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-4 gap-2">
+                                            {creneauxDisponibilite.map((slot) => {
+                                                const isSelected = formData.heure_rdv === slot.time;
+                                                return (
+                                                    <button
+                                                        key={slot.time}
+                                                        type="button"
+                                                        disabled={!slot.isAvailable}
+                                                        onClick={() => setFormData({ ...formData, heure_rdv: slot.time })}
+                                                        className={`
+                                                            relative py-2.5 px-2 rounded-2xl text-xs font-bold transition-all flex flex-col items-center justify-center gap-0.5
+                                                            ${
+                                                                !slot.isAvailable
+                                                                    ? "bg-slate-100 text-slate-400 border border-slate-200 cursor-not-allowed opacity-60"
+                                                                    : isSelected
+                                                                    ? "bg-violet-600 text-white shadow-md shadow-violet-500/30 scale-102 ring-2 ring-violet-400"
+                                                                    : "bg-white text-slate-700 border border-slate-200 hover:border-violet-500 hover:bg-violet-50/50 cursor-pointer"
+                                                            }
+                                                        `}
+                                                    >
+                                                        <span className="text-xs font-black">{slot.time}</span>
+                                                        <span className="text-[9px] font-semibold flex items-center gap-1">
+                                                            {slot.isAvailable ? (
+                                                                <span className={isSelected ? "text-white" : "text-emerald-600"}>
+                                                                    ● Libre
+                                                                </span>
+                                                            ) : (
+                                                                <span className="text-slate-400 flex items-center gap-0.5">
+                                                                    <Lock size={9} /> Occupé
+                                                                </span>
+                                                            )}
+                                                        </span>
+                                                    </button>
+                                                );
+                                            })}
+                                        </div>
+
+                                        {formData.heure_rdv && (
+                                            <div className="p-3 rounded-2xl bg-violet-50 text-violet-800 text-xs font-bold flex items-center justify-between">
+                                                <span>Créneau sélectionné : {formData.heure_rdv}</span>
+                                                <span className="text-emerald-600">✓ Prêt à valider</span>
+                                            </div>
+                                        )}
+                                    </div>
+                                )}
+                            </div>
+
+                            <div>
+                                <label className="block text-xs font-bold text-slate-700 mb-1.5">
+                                    Motif de consultation
+                                </label>
+                                <input
+                                    type="text"
+                                    placeholder="Ex: Consultation générale, Suivi..."
+                                    value={formData.motif}
+                                    onChange={(e) => setFormData({ ...formData, motif: e.target.value })}
+                                    className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-2xl text-xs font-medium focus:outline-none focus:border-violet-500 focus:bg-white transition"
+                                />
+                            </div>
+
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                <div>
+                                    <label className="block text-xs font-bold text-slate-700 mb-1.5">
+                                        Type de consultation
+                                    </label>
+                                    <select
+                                        value={formData.mode}
+                                        onChange={(e) => setFormData({ ...formData, mode: e.target.value })}
+                                        className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-2xl text-xs font-medium focus:outline-none focus:border-violet-500 focus:bg-white transition"
+                                    >
+                                        <option value="presentiel">Présentiel</option>
+                                        <option value="video">En vidéo (téléconsultation)</option>
+                                    </select>
+                                    {formData.mode === "video" && (
+                                        <p className="mt-1.5 text-[11px] font-semibold text-sky-700">
+                                            Le patient recevra un lien Google Meet pour rejoindre la visio.
+                                        </p>
+                                    )}
+                                </div>
+
+                                <div>
+                                    <label className="block text-xs font-bold text-slate-700 mb-1.5">
+                                        Statut initial
+                                    </label>
+                                    <select
+                                        value={formData.statut}
+                                        onChange={(e) => setFormData({ ...formData, statut: e.target.value })}
+                                        className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-2xl text-xs font-medium focus:outline-none focus:border-violet-500 focus:bg-white transition"
+                                    >
+                                        <option value="Confirmé">Confirmé</option>
+                                        <option value="En attente">En attente</option>
+                                    </select>
+                                </div>
+                            </div>
+
+                            <div className="pt-5 border-t border-slate-100 flex items-center justify-end gap-3">
+                                <button
+                                    type="button"
+                                    onClick={() => setShowModal(false)}
+                                    className="px-5 py-2.5 rounded-2xl bg-slate-100 hover:bg-slate-200 text-slate-600 text-xs font-bold transition cursor-pointer"
+                                >
+                                    Annuler
+                                </button>
+                                <button
+                                    type="submit"
+                                    disabled={saving || !formData.heure_rdv}
+                                    className="inline-flex items-center gap-2 px-6 py-2.5 rounded-2xl bg-violet-600 hover:bg-violet-500 disabled:opacity-50 text-white font-bold text-xs shadow-lg shadow-violet-500/25 transition cursor-pointer"
+                                >
+                                    {saving ? "Enregistrement..." : "Confirmer le rendez-vous"}
+                                </button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            )}
+        </div>
+    );
+}

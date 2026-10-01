@@ -1,0 +1,281 @@
+import React, { useEffect, useState } from "react";
+import axios from "axios";
+import { useNavigate } from "react-router-dom";
+import { CalendarDays, ArrowLeft, UserX, Plus } from "lucide-react";
+import PatientDetailPanel from "./PatientDetailPanel";
+
+const API_URL = "http://127.0.0.1:8000/api";
+
+export default function MedecinPatients() {
+    const navigate = useNavigate();
+
+    const [medecin, setMedecin] = useState(null);
+    const [patients, setPatients] = useState([]);
+    const [rendezVousCount, setRendezVousCount] = useState(0);
+    const [loading, setLoading] = useState(true);
+
+    const [selectedPatient, setSelectedPatient] = useState(null);
+    const [detailLoading, setDetailLoading] = useState(false);
+    const [detailError, setDetailError] = useState("");
+    const [detailOrdonnances, setDetailOrdonnances] = useState([]);
+    const [detailAnalyses, setDetailAnalyses] = useState([]);
+    const [detailRdvs, setDetailRdvs] = useState([]);
+
+    useEffect(() => {
+        chargerPatients();
+    }, []);
+
+    const chargerPatients = async () => {
+        try {
+            const token =
+                localStorage.getItem("token") ||
+                sessionStorage.getItem("token");
+
+            if (!token) {
+                navigate("/login");
+                return;
+            }
+
+            const response = await axios.get(
+                `${API_URL}/medecin/dashboard`,
+                {
+                    headers: {
+                        Authorization: `Bearer ${token}`,
+                        Accept: "application/json",
+                    },
+                }
+            );
+
+            setMedecin(response.data.medecin);
+            setPatients(response.data.patients || []);
+            setRendezVousCount(response.data.rendez_vous?.length || 0);
+
+        } catch (error) {
+            console.error(error);
+            if (error.response?.status === 401) {
+                localStorage.removeItem("token");
+                localStorage.removeItem("user");
+                navigate("/login");
+            }
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    const tokenHeaders = () => {
+        const t =
+            localStorage.getItem("token") || sessionStorage.getItem("token");
+        return {
+            Accept: "application/json",
+            Authorization: `Bearer ${t}`,
+        };
+    };
+
+    const chargerRdvPatient = async (patient) => {
+        const res = await axios.get(`${API_URL}/rendez-vous`, {
+            headers: tokenHeaders(),
+        });
+
+        const liste = Array.isArray(res.data)
+            ? res.data
+            : res.data?.data ?? res.data?.rendez_vous ?? [];
+
+        return (Array.isArray(liste) ? liste : []).filter(
+            (r) =>
+                Number(r.patient_id ?? r.patient?.id) === Number(patient.id)
+        );
+    };
+
+    const ouvrirDossierPatient = async (patient) => {
+        setSelectedPatient(patient);
+        setDetailRdvs([]);
+        setDetailLoading(true);
+        setDetailError("");
+
+        try {
+            const [resOrdo, resAnalyses, rdvsPatient] = await Promise.all([
+                axios.get(
+                    `${API_URL}/patients/${patient.id}/ordonnances`,
+                    { headers: tokenHeaders() }
+                ),
+                axios.get(`${API_URL}/analyses`, {
+                    headers: tokenHeaders(),
+                }),
+                chargerRdvPatient(patient),
+            ]);
+
+            const ordo = Array.isArray(resOrdo.data)
+                ? resOrdo.data
+                : (resOrdo.data?.ordonnances ??
+                  resOrdo.data?.data ??
+                  []);
+            const analyses = Array.isArray(resAnalyses.data)
+                ? resAnalyses.data
+                : resAnalyses.data?.data ?? [];
+
+            setDetailOrdonnances(Array.isArray(ordo) ? ordo : []);
+            setDetailAnalyses(
+                analyses.filter(
+                    (a) => Number(a.patient_id) === Number(patient.id)
+                )
+            );
+            setDetailRdvs(Array.isArray(rdvsPatient) ? rdvsPatient : []);
+        } catch (err) {
+            setDetailError(
+                err.response?.data?.message ||
+                    "Impossible de charger le dossier du patient."
+            );
+        } finally {
+            setDetailLoading(false);
+        }
+    };
+
+    const ouvrirAjoutOrdonnance = (patient) =>
+        navigate(`/medecin/ordonnances/nouvelle?patientId=${patient.id}`);
+
+    const ouvrirAjoutAnalyse = (patient) =>
+        navigate(`/medecin/analyses?patientId=${patient.id}`);
+
+    const fermerDetail = () => {
+        setSelectedPatient(null);
+        setDetailRdvs([]);
+    };
+
+    if (loading) {
+        return (
+            <div className="min-h-screen flex items-center justify-center bg-slate-50">
+                <div className="text-center">
+                    <div className="w-10 h-10 border-[3px] border-emerald-700 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
+                    <p className="text-sm text-slate-500">Chargement de vos patients...</p>
+                </div>
+            </div>
+        );
+    }
+
+    return (
+        <div className="bg-slate-50">
+            <div className="p-6 lg:p-8 space-y-6 max-w-7xl mx-auto">
+                {/* En-tête */}
+                <div className="rounded-2xl bg-gradient-to-r from-[#14532D] to-[#059669] shadow-sm px-5 py-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                    <div>
+                        <h1 className="text-xl font-bold text-white">Mes patients</h1>
+                        <p className="text-sm text-emerald-50/90 mt-0.5">
+                            Dr. {medecin?.prenom} {medecin?.nom}
+                            {medecin?.specialite?.nom && (
+                                <>
+                                    <span className="mx-2 text-white/50">•</span>
+                                    {medecin.specialite.nom}
+                                </>
+                            )}
+                        </p>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2.5">
+                     
+                    </div>
+                </div>
+
+                {/* Liste des patients — élément principal, placé juste sous la
+                    bannière. Le compteur ci-dessous est le seul de la page.
+                    Elle est masquée dès qu'un dossier patient est ouvert :
+                    seul le dossier du patient choisi reste affiché. */}
+                {!selectedPatient && patients.length === 0 && (
+                    <div className="bg-white border border-slate-200/80 rounded-2xl shadow-sm py-16 px-6 text-center">
+                        <div className="w-14 h-14 rounded-full bg-slate-100 flex items-center justify-center mx-auto mb-5">
+                            <UserX className="w-6 h-6 text-slate-500" />
+                        </div>
+                        <h2 className="text-lg font-semibold text-slate-800">Aucun patient</h2>
+                        <p className="text-sm text-slate-500 mt-1.5">
+                            Vous n'avez aucun patient pour le moment.
+                        </p>
+                    </div>
+                )}
+
+                {!selectedPatient && patients.length > 0 && (
+                    <div className="bg-white border border-slate-200/80 rounded-2xl shadow-sm overflow-hidden">
+                        {/* En-tête du tableau */}
+                        <div className="bg-slate-50 border-b border-slate-200 px-5 py-3.5 flex items-center justify-between">
+                            <h3 className="text-xs font-bold uppercase tracking-wider text-slate-700">
+                                Liste des patients
+                            </h3>
+                            <span className="text-xs font-medium text-slate-500">
+                                {patients.length} {patients.length > 1 ? "patients" : "patient"}
+                            </span>
+                        </div>
+
+                        <div className="overflow-x-auto">
+                            {/* Tableau centré par rapport à la page */}
+                            <table className="w-full max-w-md mx-auto">
+                                <thead>
+                                    <tr className="bg-slate-50/70 border-b border-slate-100">
+                                        <th className="px-5 py-3.5 text-center text-xs font-semibold uppercase tracking-wider text-slate-500">
+                                            N° dossier
+                                        </th>
+                                        <th className="px-5 py-3.5 text-center text-xs font-semibold uppercase tracking-wider text-slate-500">
+                                            <span className="sr-only">Ouvrir le dossier</span>
+                                        </th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {patients.map((patient) => (
+                                        <tr
+                                            key={patient.id}
+                                            className="border-t border-slate-100 first:border-t-0 hover:bg-slate-50/80 transition-colors"
+                                        >
+                                            <td className="px-5 py-4 text-center">
+                                                <span className="text-sm font-semibold text-slate-700 whitespace-nowrap">
+                                                    {patient.reference || `N° ${patient.id}`}
+                                                </span>
+                                            </td>
+                                            <td className="px-5 py-4 text-center">
+                                                <button
+                                                    type="button"
+                                                    onClick={() =>
+                                                        ouvrirDossierPatient(patient)
+                                                    }
+                                                    className="w-9 h-9 inline-flex items-center justify-center rounded-lg bg-emerald-700 text-white hover:bg-emerald-800 transition cursor-pointer"
+                                                    title="Ouvrir le dossier du patient"
+                                                    aria-label="Ouvrir le dossier du patient"
+                                                >
+                                                    <Plus size={16} />
+                                                </button>
+                                            </td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                )}
+
+                {/* Dossier du patient (dossier + consultations + actes) */}
+                {selectedPatient && (
+                    <PatientDetailPanel
+                        patient={selectedPatient}
+                        loading={detailLoading}
+                        error={detailError}
+                        ordonnances={detailOrdonnances}
+                        analyses={detailAnalyses}
+                        rdvs={detailRdvs}
+                        onClose={fermerDetail}
+                        onAjouterOrdonnance={ouvrirAjoutOrdonnance}
+                        onAjouterAnalyse={ouvrirAjoutAnalyse}
+                    />
+                )}
+
+                {/* Statistique — le nombre de patients n'est plus répété ici :
+                    il est déjà affiché dans l'en-tête de la liste ci-dessus. */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div className="flex items-center gap-4 bg-white border border-slate-200/80 rounded-2xl shadow-sm p-5">
+                        <div className="w-11 h-11 rounded-xl bg-teal-50 flex items-center justify-center">
+                            <CalendarDays className="w-5 h-5 text-teal-700" />
+                        </div>
+                        <div>
+                            <p className="text-2xl font-bold text-slate-900">{rendezVousCount}</p>
+                            <p className="text-xs text-slate-500 mt-0.5">Rendez-vous</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    );
+}

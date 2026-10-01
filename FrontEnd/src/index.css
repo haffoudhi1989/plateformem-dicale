@@ -1,0 +1,60 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
+    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+code {
+  font-family: source-code-pro, Menlo, Monaco, Consolas, 'Courier New',
+    monospace;
+}
+.input {
+    width:100%;
+    border:1px solid #d1d5db;
+    padding:12px;
+    border-radius:10px;
+    outline:none;
+}
+
+.input:focus {
+    border-color:#2563eb;
+}
+
+/* =====================================================
+   Bannière d'accueil du dashboard admin — pleine largeur
+   -----------------------------------------------------
+   Le contenu admin est centré dans un conteneur limité à
+   max-w-7xl (1280px) + 2rem de padding (AdminLayout).
+   Cette classe sort la bannière de ce cadre pour lui donner
+   toute la largeur de la zone de contenu :
+     - de 768px à 1023px : barre latérale masquée -> 100vw
+     - à partir de 1024px : barre latérale fixe (16rem)
+                            -> 100vw - 16rem
+   Le retrait de 1.5rem absorbe la largeur de la barre de
+   défilement verticale (incluse dans 100vw) : la bannière
+   touche donc les bords sans créer de débordement horizontal.
+   ===================================================== */
+
+@media (min-width: 768px) {
+  .banniere-admin-pleine-largeur {
+    position: relative;
+    left: 50%;
+    transform: translateX(-50%);
+    width: calc(100vw - 1.5rem);
+    max-width: none;
+  }
+}
+
+@media (min-width: 1024px) {
+  .banniere-admin-pleine-largeur {
+    width: calc(100vw - 16rem - 1.5rem);
+  }
+}

@@ -1,0 +1,34 @@
+<?php
+
+use Illuminate\Database\Migrations\Migration;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Schema;
+
+return new class extends Migration
+{
+    /**
+     * Photo de profil des médecins (la table patients possède déjà
+     * sa colonne photo).
+     */
+    public function up(): void
+    {
+        Schema::table('medecin', function (Blueprint $table) {
+
+            if (!Schema::hasColumn('medecin', 'photo')) {
+                $table->string('photo')
+                    ->nullable()
+                    ->after('email');
+            }
+        });
+    }
+
+    public function down(): void
+    {
+        Schema::table('medecin', function (Blueprint $table) {
+
+            if (Schema::hasColumn('medecin', 'photo')) {
+                $table->dropColumn('photo');
+            }
+        });
+    }
+};

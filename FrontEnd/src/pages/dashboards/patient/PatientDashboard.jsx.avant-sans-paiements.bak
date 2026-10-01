@@ -1,0 +1,852 @@
+import React, { useEffect, useMemo, useState } from "react";
+import { useNavigate } from "react-router-dom";
+import axios from "axios";
+import {
+    CalendarDays, CreditCard,
+    Pill, FlaskConical, User, Home, LogOut, ChevronRight,
+    HeartPulse, Clock, Stethoscope, PieChart, BarChart3, Video, Bell,
+    MessageCircle
+} from "lucide-react";
+
+const API_URL = "http://127.0.0.1:8000/api";
+
+/* =====================================================
+   GRAPHIQUES (SVG, sans dépendance externe)
+===================================================== */
+
+function BarChart({ data, color = "#2563eb" }) {
+    const w = 640;
+    const h = 210;
+    const padX = 28;
+    const padTop = 16;
+    const padBottom = 28;
+    const max = Math.max(1, ...data.map((d) => d.count));
+    const innerW = w - padX * 2;
+    const innerH = h - padTop - padBottom;
+    const slot = innerW / data.length;
+    const barW = Math.min(slot * 0.5, 44);
+
+    return (
+        <svg viewBox={`0 0 ${w} ${h}`} className="w-full h-auto">
+            {[0, 0.5, 1].map((f, i) => {
+                const y = padTop + innerH * (1 - f);
+                return (
+                    <g key={i}>
+                        <line x1={padX} x2={w - padX} y1={y} y2={y} stroke="#f1f5f9" strokeWidth="1" />
+                        <text x={padX - 8} y={y + 4} textAnchor="end" fontSize="10" fill="#cbd5e1">
+                            {Math.round(max * f)}
+                        </text>
+                    </g>
+                );
+            })}
+
+            {data.map((d, i) => {
+                const x = padX + slot * i + (slot - barW) / 2;
+                const bh = (d.count / max) * innerH;
+                const y = padTop + innerH - bh;
+                return (
+                    <g key={i}>
+                        <rect
+                            x={x}
+                            y={y}
+                            width={barW}
+                            height={Math.max(bh, d.count > 0 ? 4 : 2)}
+                            rx="6"
+                            fill={color}
+                            opacity={d.count > 0 ? 1 : 0.12}
+                        >
+                            <title>{`${d.label} : ${d.count} rendez-vous`}</title>
+                        </rect>
+                        <text x={x + barW / 2} y={h - 10} textAnchor="middle" fontSize="11" fontWeight="600" fill="#94a3b8">
+                            {d.label}
+                        </text>
+                    </g>
+                );
+            })}
+        </svg>
+    );
+}
+
+function DonutChart({ data, colors, size = 170, stroke = 20 }) {
+    const total = data.reduce((s, d) => s + d.count, 0);
+    const radius = (size - stroke) / 2;
+    const circ = 2 * Math.PI * radius;
+    let offset = 0;
+
+    return (
+        <div className="relative shrink-0" style={{ width: size, height: size }}>
+            <svg width={size} height={size} className="-rotate-90">
+                <circle cx={size / 2} cy={size / 2} r={radius} fill="none" stroke="#f1f5f9" strokeWidth={stroke} />
+                {data.map((d, i) => {
+                    const frac = total > 0 ? d.count / total : 0;
+                    const seg = (
+                        <circle
+                            key={i}
+                            cx={size / 2}
+                            cy={size / 2}
+                            r={radius}
+                            fill="none"
+                            stroke={colors[i % colors.length]}
+                            strokeWidth={stroke}
+                            strokeDasharray={`${frac * circ} ${circ}`}
+                            strokeDashoffset={-offset}
+                        />
+                    );
+                    offset += frac * circ;
+                    return seg;
+                })}
+            </svg>
+            <div className="absolute inset-0 flex flex-col items-center justify-center">
+                <span className="text-2xl font-black text-[#1C1B19]">{total}</span>
+                <span className="text-[10px] text-[#A39A89] font-medium tracking-wider">
+                    rendez-vous
+                </span>
+            </div>
+        </div>
+    );
+}
+
+/* =====================================================
+   OUTILS D'AFFICHAGE
+===================================================== */
+
+const getStatusBadge = (statut) => {
+    const s = String(statut || "").toLowerCase();
+
+    if (["confirm", "valide"].some((k) => s.includes(k))) {
+        return "border-emerald-200 bg-[#EEF4F1] text-[#264A40]";
+    }
+
+    if (["attente", "en cours"].some((k) => s.includes(k))) {
+        return "border-amber-200 bg-[#F8F3E7] text-amber-700";
+    }
+
+    if (["annul", "refus", "rejete"].some((k) => s.includes(k))) {
+        return "border-rose-200 bg-[#F8EFEF] text-rose-700";
+    }
+
+    if (["termin"].some((k) => s.includes(k))) {
+        return "border-sky-200 bg-[#EEF2F6] text-[#9F1239]";
+    }
+
+    return "border-[#E7E1D5] bg-[#EDE8DD] text-[#4A453D]";
+};
+
+const formatHeure = (heure) =>
+    heure ? String(heure).slice(0, 5) : "--:--";
+
+const parseRdvDate = (date) => {
+    const d = new Date(date);
+    if (isNaN(d.getTime())) {
+        return { day: "--", month: "", dateObj: null };
+    }
+    return {
+        day: String(d.getDate()).padStart(2, "0"),
+        month: d.toLocaleDateString("fr-FR", { month: "short" }).replace(".", ""),
+        dateObj: d,
+    };
+};
+
+export default function PatientDashboard() {
+    const navigate = useNavigate();
+
+    const [patient, setPatient] = useState(null);
+    const [activeTab, setActiveTab] = useState("dashboard");
+
+    const [stats, setStats] = useState({
+        rendez_vous: 0,
+        medecins: 0,
+        paiements: 0,
+        ordonnances: 0,
+        analyses: 0,
+        consultations_video: 0,
+    });
+
+    const [rdvList, setRdvList] = useState([]);
+
+    const [loading, setLoading] = useState(true);
+    const [notifs, setNotifs] = useState([]);
+
+    useEffect(() => {
+        getDashboard();
+    }, []);
+
+    const getDashboard = async () => {
+        try {
+            const token = localStorage.getItem("token");
+
+            if (!token) {
+                navigate("/login");
+                return;
+            }
+
+            const response = await axios.get(`${API_URL}/patient/dashboard`, {
+                headers: {
+                    Authorization: `Bearer ${token}`,
+                    Accept: "application/json",
+                },
+            });
+
+            setPatient(response.data.patient);
+            setRdvList(response.data.rendez_vous || []);
+            setStats(
+                response.data.statistiques || {
+                    rendez_vous: 0,
+                    medecins: 0,
+                    paiements: 0,
+                    ordonnances: 0,
+                    analyses: 0,
+                    consultations_video: 0,
+                }
+            );
+
+            // Notifications in-app (affichées sur l'accueil)
+            axios
+                .get(`${API_URL}/notifications`, {
+                    headers: {
+                        Authorization: `Bearer ${token}`,
+                        Accept: "application/json",
+                    },
+                })
+                .then((res) => setNotifs(res.data?.data?.slice(0, 3) || []))
+                .catch(() => setNotifs([]));
+        } catch (error) {
+            console.error("Erreur dashboard patient :", error);
+            if (error.response?.status === 401) {
+                localStorage.removeItem("token");
+                localStorage.removeItem("user");
+                navigate("/login");
+            }
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    const logout = async () => {
+        try {
+            const token = localStorage.getItem("token");
+            await axios.post(
+                `${API_URL}/logout`,
+                {},
+                {
+                    headers: {
+                        Authorization: `Bearer ${token}`,
+                        Accept: "application/json",
+                    },
+                }
+            );
+        } catch (error) {
+            console.error(error);
+        }
+
+        localStorage.removeItem("token");
+        localStorage.removeItem("user");
+        navigate("/login");
+    };
+
+    /* ----- Données pour les graphiques (avant tout retour anticipé) ----- */
+    const totalRdv = rdvList.length;
+
+    const monthlyData = useMemo(() => {
+        const months = [...Array(6)].map((_, i) => {
+            const d = new Date();
+            d.setMonth(d.getMonth() - (5 - i));
+            return {
+                key: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`,
+                label: d.toLocaleDateString("fr-FR", { month: "short" }),
+            };
+        });
+
+        return months.map((m) => ({
+            ...m,
+            count: rdvList.filter((r) => {
+                if (!r.date_rdv) return false;
+                const rd = new Date(r.date_rdv);
+                return `${rd.getFullYear()}-${String(rd.getMonth() + 1).padStart(2, "0")}` === m.key;
+            }).length,
+        }));
+    }, [rdvList]);
+
+    const statusData = useMemo(() => {
+        const map = {};
+        rdvList.forEach((r) => {
+            const s = (r.statut || "Indéfini").trim() || "Indéfini";
+            map[s] = (map[s] || 0) + 1;
+        });
+        return Object.entries(map).map(([label, count]) => ({ label, count }));
+    }, [rdvList]);
+
+    const statusColorsMap = {
+        "Confirmé": "#2F5D50",
+        "En attente": "#8A6D1F",
+        "Annulé": "#7A2E33",
+        "Terminé": "#881337",
+    };
+
+    /* ----- Prochains rendez-vous ----- */
+
+    const upcomingRdv = useMemo(() => {
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+
+        return rdvList
+            .filter((r) => {
+                if (!r.date_rdv) return false;
+                const d = new Date(r.date_rdv);
+                d.setHours(0, 0, 0, 0);
+                const statut = String(r.statut || "").toLowerCase();
+                return d >= today && !["annul", "refus"].some((k) => statut.includes(k));
+            })
+            .sort((a, b) =>
+                `${a.date_rdv} ${a.heure_rdv || ""}`.localeCompare(
+                    `${b.date_rdv} ${b.heure_rdv || ""}`
+                )
+            )
+            .slice(0, 3);
+    }, [rdvList]);
+
+    const recentRdv = useMemo(() => {
+        return [...rdvList]
+            .sort((a, b) =>
+                `${b.date_rdv} ${b.heure_rdv || ""}`.localeCompare(
+                    `${a.date_rdv} ${a.heure_rdv || ""}`
+                )
+            )
+            .slice(0, 3);
+    }, [rdvList]);
+
+    const displayRdv = upcomingRdv.length > 0 ? upcomingRdv : recentRdv;
+
+    /* ----- Rendez-vous du jour ----- */
+    const nowDate = new Date();
+    const todayISO = `${nowDate.getFullYear()}-${String(nowDate.getMonth() + 1).padStart(2, "0")}-${String(nowDate.getDate()).padStart(2, "0")}`;
+
+    const rdvDuJour = useMemo(() => {
+        return rdvList
+            .filter((r) => {
+                if (!r.date_rdv) return false;
+                const statut = String(r.statut || "").toLowerCase();
+                return (
+                    String(r.date_rdv).split("T")[0] === todayISO &&
+                    !["annul", "refus"].some((k) => statut.includes(k))
+                );
+            })
+            .sort((a, b) =>
+                String(a.heure_rdv || "").localeCompare(String(b.heure_rdv || ""))
+            );
+    }, [rdvList, todayISO]);
+
+    if (loading) {
+        return (
+            <div className="min-h-screen bg-[#F6F3EE] flex items-center justify-center">
+                <div className="rounded-md border border-[#E7E1D5] bg-white p-10 text-center shadow-[0_1px_3px_rgba(28,27,25,0.06)]">
+                    <div className="w-12 h-12 border-[3px] border-sky-500 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
+                    <p className="text-sm text-[#8C8577] font-medium">
+                        Chargement de votre espace...
+                    </p>
+                </div>
+            </div>
+        );
+    }
+
+    const menu = [
+        { id: "dashboard", label: "Accueil", icon: Home, path: "/patient/dashboard" },
+        { id: "notifications", label: "Notifications", icon: Bell, path: "/patient/notifications" },
+        { id: "medecins", label: "Mes médecins", icon: Stethoscope, path: "/patient/medecins" },
+        { id: "rendez-vous", label: "Mes rendez-vous", icon: CalendarDays, path: "/patient/rendez-vous" },
+        { id: "paiements", label: "Mes paiements", icon: CreditCard, path: "/patient/paiements" },
+        { id: "consultations-video", label: "Consultations vidéo", icon: Video, path: "/patient/consultations-video" },
+        { id: "ordonnances", label: "Mes ordonnances", icon: Pill, path: "/patient/ordonnances" },
+        { id: "analyses", label: "Mes analyses", icon: FlaskConical, path: "/patient/analyses" },
+        { id: "messages", label: "Messagerie", icon: MessageCircle, path: "/patient/messages" },
+        { id: "profil", label: "Mon profil", icon: User, path: "/patient/profil" },
+    ];
+
+    const cardColors = [
+        { light: "bg-[#EEF2F6]", text: "text-[#881337]", ring: "hover:ring-[#DDE5EC]" },
+        { light: "bg-[#F1EEF4]", text: "text-[#4A3C5C]", ring: "hover:ring-violet-100" },
+        { light: "bg-[#EEF4F1]", text: "text-[#2F5D50]", ring: "hover:ring-[#DCE8E4]" },
+        { light: "bg-[#F8F3E7]", text: "text-[#8A6D1F]", ring: "hover:ring-[#EEE5CE]" },
+        { light: "bg-[#F8EFEF]", text: "text-[#7A2E33]", ring: "hover:ring-[#F0DEDF]" },
+        { light: "bg-[#EEF2F6]", text: "text-[#881337]", ring: "hover:ring-cyan-100" },
+        { light: "bg-[#EEF2F6]", text: "text-[#881337]", ring: "hover:ring-[#DDE5EC]" },
+    ];
+
+    const cards = [
+        { title: "Rendez-vous", description: "Consulter et gérer", icon: CalendarDays, count: stats.rendez_vous, path: "/patient/rendez-vous" },
+        { title: "Médecins", description: "Mes praticiens", icon: Stethoscope, count: stats.medecins, path: "/patient/medecins" },
+        { title: "Paiements", description: "Historique financier", icon: CreditCard, count: stats.paiements, path: "/patient/paiements" },
+        { title: "Consultations Vidéo", description: "Appels avec médecins", icon: Video, count: stats.consultations_video, path: "/patient/consultations-video" },
+        { title: "Ordonnances", description: "Mes prescriptions", icon: Pill, count: stats.ordonnances, path: "/patient/ordonnances" },
+        { title: "Analyses", description: "Résultats médicaux", icon: FlaskConical, count: stats.analyses, path: "/patient/analyses" },
+    ];
+
+    const handleMenuClick = (item) => {
+        if (item.id === "dashboard") {
+            setActiveTab("dashboard");
+        } else {
+            navigate(item.path);
+        }
+    };
+
+    const isMenuActive = (item) =>
+        item.id === "dashboard" && activeTab === "dashboard";
+
+    const today = new Date();
+    const hour = today.getHours();
+    const greeting = hour < 12 ? "Bonjour" : hour < 18 ? "Bon après-midi" : "Bonsoir";
+    const initial = patient?.prenom?.charAt(0)?.toUpperCase() || "P";
+    const fullName = `${patient?.prenom || ""} ${patient?.nom || ""}`;
+
+    return (
+        <div className="min-h-screen bg-[#F6F3EE] flex">
+            {/* SIDEBAR (desktop) */}
+            <aside className="hidden lg:flex w-64 bg-white border-r border-[#E7E1D5] min-h-screen flex-col sticky top-0 h-screen">
+                {/* Logo */}
+                <div className="px-5 py-5 border-b border-[#EDE8DD]">
+                    <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 bg-gradient-to-br from-[#881337] to-[#881337] rounded-xl flex items-center justify-center shadow-md shadow-blue-200">
+                            <HeartPulse size={20} className="text-white" />
+                        </div>
+                        <div>
+                            <span className="block text-lg font-bold text-[#1C1B19] leading-tight">
+                                MedPlatform
+                            </span>
+                            
+                        </div>
+                    </div>
+                </div>
+
+            
+
+                {/* Navigation */}
+                <nav className="px-3 flex-1 space-y-1 overflow-y-auto">
+                    {menu.map((item) => {
+                        const isActive = isMenuActive(item);
+                        const Icon = item.icon;
+
+                        return (
+                            <button
+                                key={item.id}
+                                onClick={() => handleMenuClick(item)}
+                                className={`
+                                    relative w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-left transition-colors duration-200 group
+                                    ${
+                                        isActive
+                                            ? "bg-[#EEF2F6] text-rose-700 font-semibold"
+                                            : "text-[#4A453D] hover:bg-[#EDE8DD] hover:text-[#1C1B19]"
+                                    }
+                                `}
+                            >
+                                {isActive && (
+                                    <span className="absolute left-0 top-1/2 -translate-y-1/2 h-6 w-1 rounded-full bg-[#881337]" />
+                                )}
+                                <Icon size={19} className={isActive ? "text-[#881337]" : "text-[#A39A89] group-hover:text-[#881337]"} />
+                                <span className="text-sm">{item.label}</span>
+                                {isActive && <ChevronRight size={15} className="ml-auto text-blue-400" />}
+                            </button>
+                        );
+                    })}
+                </nav>
+
+                {/* Logout */}
+                <div className="p-3 border-t border-[#EDE8DD]">
+                    <button
+                        onClick={logout}
+                        className="w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-[#7A2E33] hover:bg-[#F8EFEF] transition-colors duration-200 group"
+                    >
+                        <LogOut size={19} className="text-[#8C444A] group-hover:text-rose-500" />
+                        <span className="text-sm font-medium">Déconnexion</span>
+                    </button>
+                </div>
+            </aside>
+
+            {/* MAIN CONTENT */}
+            <main className="flex-1 min-w-0 p-4 sm:p-6 lg:p-8 overflow-y-auto">
+
+                {/* BARRE MOBILE */}
+                <div className="lg:hidden flex items-center justify-between px-1 mb-4">
+                    <div className="flex items-center gap-2.5">
+                        <div className="w-9 h-9 bg-gradient-to-br from-[#881337] to-[#881337] rounded-lg flex items-center justify-center">
+                            <HeartPulse size={18} className="text-white" />
+                        </div>
+                        <span className="font-bold text-[#1C1B19]">MedPlatform</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                        <button
+                            onClick={logout}
+                            aria-label="Déconnexion"
+                            className="w-9 h-9 flex items-center justify-center rounded-lg text-rose-500 hover:bg-[#F8EFEF] transition"
+                        >
+                            <LogOut size={18} />
+                        </button>
+                        <div className="w-9 h-9 rounded-full bg-gradient-to-br from-[#881337] to-[#881337] text-white flex items-center justify-center font-bold text-sm">
+                            {initial}
+                        </div>
+                    </div>
+                </div>
+
+                {/* NAVIGATION MOBILE (bandeau horizontal) */}
+                <div className="lg:hidden -mx-4 px-4 mb-6 overflow-x-auto flex gap-2 pb-1">
+                    {menu.map((item) => {
+                        const isActive = isMenuActive(item);
+                        const Icon = item.icon;
+
+                        return (
+                            <button
+                                key={item.id}
+                                onClick={() => handleMenuClick(item)}
+                                className={`
+                                    flex shrink-0 items-center gap-2 rounded-full px-4 py-2 text-sm font-medium transition
+                                    ${
+                                        isActive
+                                            ? "bg-[#881337] text-white shadow-[0_1px_3px_rgba(28,27,25,0.06)]"
+                                            : "bg-white border border-[#E7E1D5] text-[#4A453D] hover:bg-[#EDE8DD]"
+                                    }
+                                `}
+                            >
+                                <Icon size={15} />
+                                {item.label}
+                            </button>
+                        );
+                    })}
+                </div>
+
+                {/* DASHBOARD */}
+                <>
+                        {/* =================================================
+                            BANNIÈRE DE BIENVENUE
+                        ================================================= */}
+
+                        <section className="relative overflow-hidden rounded-lg bg-gradient-to-r from-sky-600 via-[#881337] to-[#881337] p-6 sm:p-8 text-white shadow-lg shadow-blue-200/60 mb-8">
+                            {/* Décor */}
+                            <div className="absolute -top-12 -right-12 h-44 w-44 rounded-full bg-white/10" />
+                            <div className="absolute top-8 right-28 h-24 w-24 rounded-full bg-white/10" />
+                            <div className="absolute -bottom-16 right-56 h-36 w-36 rounded-full bg-white/10" />
+
+                            <div className="relative flex flex-wrap items-center justify-between gap-6">
+                                <div>
+                                    <p className="text-sm font-medium text-[#DDE5EC]">Espace patient</p>
+                                    <h1 className="mt-1 text-2xl sm:text-3xl font-bold">
+                                        {greeting}, {patient?.prenom || ""}
+                                    </h1>
+                                    <p className="mt-2 flex items-center gap-2 text-sm text-[#DDE5EC]">
+                                        <CalendarDays size={15} />
+                                        {today.toLocaleDateString("fr-FR", {
+                                            weekday: "long",
+                                            day: "numeric",
+                                            month: "long",
+                                            year: "numeric",
+                                        })}
+                                    </p>
+                                </div>
+                               
+                            </div>
+                        </section>
+
+                        {/* =================================================
+                            NOTIFICATIONS RÉCENTES
+                        ================================================= */}
+                        {notifs.length > 0 && (
+                            <div className="mb-8 bg-white rounded-md border border-[#E7E1D5] shadow-[0_1px_3px_rgba(28,27,25,0.06)] overflow-hidden">
+                                <div className="px-5 py-4 border-b border-[#EDE8DD] flex items-center justify-between">
+                                    <div className="flex items-center gap-2.5">
+                                        <Bell size={16} className="text-[#881337]" />
+                                        <h3 className="font-bold text-[#1C1B19]">Notifications récentes</h3>
+                                        {notifs.filter((n) => !n.read_at).length > 0 && (
+                                            <span className="rounded-full bg-rose-100 text-rose-700 text-[10px] font-bold px-2 py-0.5">
+                                                {notifs.filter((n) => !n.read_at).length} non lue(s)
+                                            </span>
+                                        )}
+                                    </div>
+                                    <button
+                                        type="button"
+                                        onClick={() => navigate("/patient/notifications")}
+                                        className="text-xs font-bold text-[#881337] hover:underline flex items-center gap-1"
+                                    >
+                                        Tout voir <ChevronRight size={13} />
+                                    </button>
+                                </div>
+                                <div className="divide-y divide-[#EDE8DD]">
+                                    {notifs.map((n) => (
+                                        <div key={n.id} className={`px-5 py-3.5 flex items-start gap-3 ${n.read_at ? "" : "bg-rose-50/40"}`}>
+                                            <span
+                                                className={`w-2 h-2 rounded-full shrink-0 mt-1.5 ${n.read_at ? "bg-transparent" : "bg-[#881337]"}`}
+                                            />
+                                            <div className="min-w-0 flex-1">
+                                                <p className="text-sm font-bold text-[#2A2825]">{n.title}</p>
+                                                <p className="text-xs text-[#8C8577] mt-0.5 leading-5">{n.message}</p>
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
+
+                        {/* =================================================
+                            RDV DU JOUR
+                        ================================================= */}
+                        <div className="mb-8 bg-white rounded-md border border-[#E7E1D5] shadow-[0_1px_3px_rgba(28,27,25,0.06)] overflow-hidden">
+                            <div className="px-5 py-4 border-b border-[#EDE8DD] flex items-center justify-between">
+                                <div className="flex items-center gap-2.5">
+                                    <CalendarDays size={16} className="text-[#881337]" />
+                                    <h3 className="font-bold text-[#1C1B19]">RDV du jour</h3>
+                                    {rdvDuJour.length > 0 && (
+                                        <span className="rounded-full bg-rose-100 text-rose-700 text-[10px] font-bold px-2 py-0.5">
+                                            {rdvDuJour.length}
+                                        </span>
+                                    )}
+                                </div>
+                                <p className="text-[11px] text-[#8C8577] capitalize">
+                                    {nowDate.toLocaleDateString("fr-FR", { weekday: "long", day: "numeric", month: "long" })}
+                                </p>
+                            </div>
+
+                            {rdvDuJour.length === 0 ? (
+                                <div className="px-5 py-6 text-center">
+                                    <p className="text-xs font-bold text-[#A39A89]">
+                                        Aucun rendez-vous aujourd'hui
+                                    </p>
+                                </div>
+                            ) : (
+                                <div className="divide-y divide-[#EDE8DD]">
+                                    {rdvDuJour.map((rdv) => (
+                                        <div key={rdv.id} className="px-5 py-3.5 flex items-center justify-between gap-3">
+                                            <div className="min-w-0 flex-1">
+                                                <p className="text-sm font-bold text-[#2A2825]">
+                                                    Dr {rdv.medecin?.prenom} {rdv.medecin?.nom}
+                                                </p>
+                                                <p className="text-xs text-[#8C8577] mt-0.5">
+                                                    {rdv.motif || "Consultation"} · {rdv.medecin?.specialite?.nom || ""}
+                                                </p>
+                                            </div>
+                                            <span className="shrink-0 text-sm font-black text-[#881337] tabular-nums">
+                                                {String(rdv.heure_rdv || "").slice(0, 5)}
+                                            </span>
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
+                        </div>
+
+                        {/* =================================================
+                            CARTES DE STATISTIQUES
+                        ================================================= */}
+
+                        <section className="grid gap-5 mb-8 [grid-template-columns:repeat(auto-fit,minmax(230px,1fr))]">
+                            {cards.map((card, index) => {
+                                const color = cardColors[index % cardColors.length];
+                                const Icon = card.icon;
+
+                                return (
+                                    <button
+                                        key={index}
+                                        onClick={() =>
+                                            card.action
+                                                ? card.action()
+                                                : navigate(card.path)
+                                        }
+                                        className={`
+                                            group bg-white rounded-md p-5 text-left border border-[#E7E1D5]
+                                            hover:border-rose-200 hover:shadow-md hover:-translate-y-0.5
+                                            transition-all duration-200 ring-1 ring-transparent ${color.ring}
+                                        `}
+                                    >
+                                        <div className="flex items-start justify-between">
+                                            <div className={`w-12 h-12 ${color.light} rounded-xl flex items-center justify-center transition-transform duration-200 group-hover:scale-110`}>
+                                                <Icon size={22} className={color.text} />
+                                            </div>
+                                            {card.count !== null ? (
+                                                <span className={`text-3xl font-bold ${color.text}`}>
+                                                    {card.count}
+                                                </span>
+                                            ) : (
+                                                <span className="rounded-full bg-[#EDE8DD] px-2.5 py-1 text-[10px] font-semibold tracking-wide text-[#8C8577]">
+                                                    Nouveau
+                                                </span>
+                                            )}
+                                        </div>
+                                        <h3 className="font-semibold text-[#2A2825] mt-4 mb-1">
+                                            {card.title}
+                                        </h3>
+                                        <p className="text-sm text-[#A39A89]">
+                                            {card.description}
+                                        </p>
+
+                                        <div className="flex items-center gap-1 mt-3 text-xs font-medium text-[#A39A89] group-hover:text-[#881337] transition-colors">
+                                            <span>Voir détails</span>
+                                            <ChevronRight size={14} className="group-hover:translate-x-1 transition-transform" />
+                                        </div>
+                                    </button>
+                                );
+                            })}
+                        </section>
+
+                        {/* =================================================
+                            PROCHAINS RENDEZ-VOUS
+                        ================================================= */}
+
+                        <section className="mb-8">
+                            <div className="flex items-center justify-between gap-4 mb-4">
+                                <div className="flex items-center gap-3">
+                                    <div className="w-9 h-9 rounded-xl bg-[#EEF2F6] border border-[#DDE5EC] flex items-center justify-center">
+                                        <CalendarDays size={18} className="text-[#881337]" />
+                                    </div>
+                                    <div>
+                                        <h3 className="font-bold text-[#1C1B19]">
+                                            {upcomingRdv.length > 0
+                                                ? "Prochains rendez-vous"
+                                                : "Derniers rendez-vous"}
+                                        </h3>
+                                        <p className="text-xs text-[#A39A89]">
+                                            {upcomingRdv.length > 0
+                                                ? "Vos prochaines consultations"
+                                                : "Historique de vos consultations"}
+                                        </p>
+                                    </div>
+                                </div>
+                                <button
+                                    type="button"
+                                    onClick={() => navigate("/patient/rendez-vous")}
+                                    className="flex items-center gap-1 text-sm font-medium text-[#881337] hover:text-rose-700 transition"
+                                >
+                                    Tout voir
+                                    <ChevronRight size={15} />
+                                </button>
+                            </div>
+
+                            {displayRdv.length > 0 ? (
+                                <div className="grid gap-4 lg:grid-cols-3">
+                                    {displayRdv.map((rdv) => {
+                                        const { day, month } = parseRdvDate(rdv.date_rdv);
+                                        const medecin = rdv.medecin;
+
+                                        return (
+                                            <div
+                                                key={rdv.id}
+                                                className="flex items-center gap-4 rounded-md border border-[#E7E1D5] bg-white p-4 shadow-[0_1px_3px_rgba(28,27,25,0.06)] transition hover:shadow-md hover:border-rose-200"
+                                            >
+                                                {/* Bloc date */}
+                                                <div className="flex h-14 w-14 shrink-0 flex-col items-center justify-center rounded-xl border border-[#DDE5EC] bg-[#EEF2F6] text-rose-700">
+                                                    <span className="text-lg font-bold leading-none">
+                                                        {day}
+                                                    </span>
+                                                    <span className="mt-0.5 text-[10px] font-semibold tracking-wide">
+                                                        {month}
+                                                    </span>
+                                                </div>
+
+                                                {/* Détails */}
+                                                <div className="min-w-0 flex-1">
+                                                    <p className="truncate font-semibold text-[#2A2825]">
+                                                        Dr. {medecin?.prenom} {medecin?.nom}
+                                                    </p>
+                                                    <p className="text-xs text-[#8C8577]">
+                                                        {medecin?.specialite?.nom || "Médecin"}
+                                                    </p>
+                                                    <p className="mt-1 flex items-center gap-1.5 text-xs text-[#8C8577]">
+                                                        <Clock size={12} />
+                                                        {formatHeure(rdv.heure_rdv)}
+                                                        {rdv.motif && (
+                                                            <span className="truncate">· {rdv.motif}</span>
+                                                        )}
+                                                    </p>
+                                                </div>
+
+                                                {/* Statut */}
+                                                <span className={`shrink-0 rounded-full border px-2.5 py-1 text-[11px] font-semibold ${getStatusBadge(rdv.statut)}`}>
+                                                    {rdv.statut || "En attente"}
+                                                </span>
+                                            </div>
+                                        );
+                                    })}
+                                </div>
+                            ) : (
+                                <div className="rounded-md border border-dashed border-[#C7BEAC] bg-white p-10 text-center shadow-[0_1px_3px_rgba(28,27,25,0.06)]">
+                                    <CalendarDays size={32} className="mx-auto mb-3 text-[#C7BEAC]" />
+                                    <p className="font-medium text-[#4A453D]">
+                                        Aucun rendez-vous pour le moment
+                                    </p>
+                                    <button
+                                        type="button"
+                                        onClick={() => navigate("/patient/rendez-vous/nouveau")}
+                                        className="mt-4 inline-flex items-center gap-2 rounded-xl bg-[#881337] px-5 py-2.5 text-sm font-medium text-white transition hover:bg-rose-700"
+                                    >
+                                        <CalendarDays size={15} />
+                                        Prendre rendez-vous
+                                    </button>
+                                </div>
+                            )}
+                        </section>
+
+                        {/* =================================================
+                            GRAPHIQUES
+                        ================================================= */}
+
+                        <section className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+                            <div className="bg-white rounded-md border border-[#E7E1D5] p-6 shadow-[0_1px_3px_rgba(28,27,25,0.06)]">
+                                <div className="flex items-center justify-between mb-4">
+                                    <div>
+                                        <h3 className="font-bold text-[#1C1B19]">Activité de rendez-vous</h3>
+                                        <p className="text-sm text-[#A39A89]">6 derniers mois</p>
+                                    </div>
+                                    <div className="w-10 h-10 bg-[#EEF2F6] rounded-xl flex items-center justify-center">
+                                        <BarChart3 size={20} className="text-[#881337]" />
+                                    </div>
+                                </div>
+                                {totalRdv > 0 ? (
+                                    <BarChart data={monthlyData} color="#2563eb" />
+                                ) : (
+                                    <div className="h-40 flex flex-col items-center justify-center text-center">
+                                        <CalendarDays size={28} className="text-[#C7BEAC] mb-2" />
+                                        <p className="text-sm text-[#A39A89] font-medium">
+                                            Aucun rendez-vous pour le moment
+                                        </p>
+                                    </div>
+                                )}
+                            </div>
+
+                            <div className="bg-white rounded-md border border-[#E7E1D5] p-6 shadow-[0_1px_3px_rgba(28,27,25,0.06)]">
+                                <div className="flex items-center justify-between mb-4">
+                                    <div>
+                                        <h3 className="font-bold text-[#1C1B19]">Répartition des rendez-vous</h3>
+                                        <p className="text-sm text-[#A39A89]">Par statut</p>
+                                    </div>
+                                    <div className="w-10 h-10 bg-[#F1EEF4] rounded-xl flex items-center justify-center">
+                                        <PieChart size={20} className="text-[#4A3C5C]" />
+                                    </div>
+                                </div>
+                                {totalRdv > 0 ? (
+                                    <div className="flex flex-col sm:flex-row items-center justify-center gap-6 py-2">
+                                        <DonutChart
+                                            data={statusData}
+                                            colors={statusData.map((d) => statusColorsMap[d.label] || "#94a3b8")}
+                                        />
+                                        <div className="space-y-2.5">
+                                            {statusData.map((d) => (
+                                                <div key={d.label} className="flex items-center gap-2.5">
+                                                    <span
+                                                        className="w-3 h-3 rounded-full"
+                                                        style={{ backgroundColor: statusColorsMap[d.label] || "#94a3b8" }}
+                                                    />
+                                                    <span className="text-sm font-medium text-[#4A453D] w-24">{d.label}</span>
+                                                    <span className="text-sm font-bold text-[#1C1B19]">{d.count}</span>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </div>
+                                ) : (
+                                    <div className="h-40 flex flex-col items-center justify-center text-center">
+                                        <PieChart size={28} className="text-[#C7BEAC] mb-2" />
+                                        <p className="text-sm text-[#A39A89] font-medium">
+                                            Aucune donnée à afficher
+                                        </p>
+                                    </div>
+                                )}
+                            </div>
+                        </section>
+                    </>
+            </main>
+        </div>
+    );
+}

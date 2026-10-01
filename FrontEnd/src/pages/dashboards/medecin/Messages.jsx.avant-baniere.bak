@@ -1,0 +1,79 @@
+import React, { useState } from "react";
+import { MessageCircle, Stethoscope, UserRound } from "lucide-react";
+import MessagerieInterne from "../../../components/MessagerieInterne";
+import StaffMessenger from "../../../components/StaffMessenger";
+
+/**
+ * Messagerie de l'espace médecin — deux canaux :
+ *  - « Mes patients »  : messages patients (table `messages`)
+ *  - « Personnel »     : secrétaires du cabinet + administration
+ *                        (messagerie interne, table `staff_messages`)
+ */
+export default function Messages() {
+    const [onglet, setOnglet] = useState("patients");
+
+    return (
+        <div className="bg-slate-50">
+            <div className="p-6 lg:p-8 space-y-6 max-w-7xl mx-auto">
+                {/* En-tête (style des pages médecin) */}
+                <div className="rounded-3xl bg-gradient-to-r from-[#14532D] to-[#059669] shadow-lg p-6 md:p-8 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                    <div className="flex items-center gap-4">
+                        <div className="hidden sm:flex w-12 h-12 rounded-2xl bg-white/15 items-center justify-center text-white">
+                            <MessageCircle size={22} />
+                        </div>
+
+                        <div>
+                            <h1 className="text-2xl font-bold text-white">
+                                Messagerie
+                            </h1>
+
+                            <p className="text-blue-100/80 text-sm mt-1">
+                                Échangez avec vos patients et le personnel du cabinet
+                            </p>
+                        </div>
+                    </div>
+
+                    {/* Onglets des deux canaux */}
+                    <div className="flex items-center gap-1.5 bg-white/10 border border-white/20 rounded-2xl p-1 shrink-0">
+                        <button
+                            type="button"
+                            onClick={() => setOnglet("patients")}
+                            className={`inline-flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition cursor-pointer ${
+                                onglet === "patients"
+                                    ? "bg-white text-[#14532D]"
+                                    : "text-white/90 hover:bg-white/10"
+                            }`}
+                        >
+                            <UserRound size={15} />
+                            Mes patients
+                        </button>
+
+                        <button
+                            type="button"
+                            onClick={() => setOnglet("personnel")}
+                            className={`inline-flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition cursor-pointer ${
+                                onglet === "personnel"
+                                    ? "bg-white text-[#14532D]"
+                                    : "text-white/90 hover:bg-white/10"
+                            }`}
+                        >
+                            <Stethoscope size={15} />
+                            Personnel
+                        </button>
+                    </div>
+                </div>
+
+                {/* Carte blanche contenant la messagerie */}
+                <div className="bg-white border border-slate-200/80 rounded-3xl shadow-sm overflow-hidden h-[580px]">
+                    {onglet === "patients" ? (
+                        <MessagerieInterne titre="Mes patients" />
+                    ) : (
+                        <StaffMessenger
+                            groupes={["Secrétaires", "Administration"]}
+                        />
+                    )}
+                </div>
+            </div>
+        </div>
+    );
+}

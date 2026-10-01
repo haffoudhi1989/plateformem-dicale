@@ -1,0 +1,404 @@
+import React, { useEffect, useState } from "react";
+import axios from "axios";
+import { useNavigate } from "react-router-dom";
+import { ChevronLeft, ChevronRight, CalendarDays, Clock, MapPin, Video, Info } from "lucide-react";
+
+const API_URL = "http://127.0.0.1:8000/api";
+
+const normalizeTime = (timeStr) => {
+    if (!timeStr) return "";
+    const parts = timeStr.trim().split(":");
+    if (parts.length >= 2) return `${parts[0].padStart(2, "0")}:${parts[1].padStart(2, "0")}`;
+    return timeStr;
+};
+
+const dateISO = (d) => {
+    const p = String(d || "").split(" ")[0].split("-");
+    return p.length === 3 ? p.join("-") : "";
+};
+
+const aujourdHuiISO = () => {
+    const t = new Date();
+    const m = String(t.getMonth() + 1).padStart(2, "0");
+    const j = String(t.getDate()).padStart(2, "0");
+    return `${t.getFullYear()}-${m}-${j}`;
+};
+
+export default function MedecinRendezVous() {
+    const navigate = useNavigate();
+
+    const [medecin, setMedecin] = useState(null);
+    const [rendezVous, setRendezVous] = useState([]);
+    const [loading, setLoading] = useState(true);
+
+    const [onglet, setOnglet] = useState("aujourdhui");
+    const [feries, setFeries] = useState([]);
+
+    /* Pagination du tableau : nombre de rendez-vous par page */
+    const [page, setPage] = useState(1);
+    const PAR_PAGE = 10;
+
+    // Charge les fermetures du cabinet (jours fériés) du médecin
+    useEffect(() => {
+        const cabinetId = medecin?.cabinet_id;
+        if (!cabinetId) return;
+
+        const token = localStorage.getItem("token");
+        if (!token) return;
+
+        axios
+            .get(`${API_URL}/fermetures?cabinet_id=${cabinetId}`, {
+                headers: {
+                    Authorization: `Bearer ${token}`,
+                    Accept: "application/json",
+                },
+            })
+            .then((res) => {
+                const items = res.data?.data ?? [];
+                const aujourdHui = new Date().toISOString().slice(0, 10);
+
+                const fermeturesAVenir = items
+                    .filter(
+                        (f) =>
+                            f.type === "jour_ferie" ||
+                            (f.type === "absence_medecin" &&
+                                Number(f.medecin_id) === Number(medecin.id))
+                    )
+                    .filter((f) => (f.date_fin || f.date_debut) >= aujourdHui);
+
+                setFeries(fermeturesAVenir);
+            })
+            .catch(() => setFeries([]));
+    }, [medecin]);
+
+    // Format court d'une fermeture : "le 25/12/2026 (Noël)" ou "du … au …"
+    const formaterFermeture = (f) => {
+        const d = (s) =>
+            s ? `${s.slice(8, 10)}/${s.slice(5, 7)}/${s.slice(0, 4)}` : "";
+        const debut = d(f.date_debut);
+        const fin = d(f.date_fin);
+        const motif =
+            f.motif ||
+            (f.type === "jour_ferie"
+                ? "Jour férié"
+                : "Indisponibilité du médecin");
+        return fin && fin !== debut
+            ? `du ${debut} au ${fin} (${motif})`
+            : `le ${debut} (${motif})`;
+    };
+
+    useEffect(() => {
+        chargerRendezVous();
+    }, []);
+
+    const chargerRendezVous = async () => {
+        try {
+            const token = localStorage.getItem("token");
+
+            if (!token) {
+                navigate("/login");
+                return;
+            }
+
+            const response = await axios.get(
+                `${API_URL}/medecin/dashboard`,
+                {
+                    headers: {
+                        Authorization: `Bearer ${token}`,
+                        Accept: "application/json",
+                    },
+                }
+            );
+
+            setMedecin(response.data.medecin);
+            setRendezVous(response.data.rendez_vous || []);
+
+        } catch (error) {
+            console.error(error);
+            if (error.response?.status === 401) {
+                localStorage.removeItem("token");
+                localStorage.removeItem("user");
+                navigate("/login");
+            }
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    const iso = aujourdHuiISO();
+
+    // Filtre principal par onglet (date)
+    const rdvParPeriode = rendezVous.filter((rdv) => {
+        const d = dateISO(rdv.date_rdv);
+        if (!d) return true;
+        if (onglet === "aujourdhui") return d === iso;
+        if (onglet === "avenir") return d >= iso;
+        return true; // tous
+    });
+
+    // Rendez-vous de la période sélectionnée
+    // (la zone de recherche a été supprimée : plus de filtrage par texte)
+    const filteredRdv = rdvParPeriode;
+
+    const nbAujourdhui = rendezVous.filter(
+        (r) => dateISO(r.date_rdv) === iso
+    ).length;
+    const nbAvenir = rendezVous.filter(
+        (r) => dateISO(r.date_rdv) >= iso
+    ).length;
+
+    const ONGLETS = [
+        { id: "aujourdhui", label: "Aujourd'hui", count: nbAujourdhui },
+        { id: "avenir", label: "À venir", count: nbAvenir },
+        { id: "tous", label: "Tous", count: rendezVous.length },
+    ];
+
+    /* Pagination : découpage de la liste filtrée */
+    const totalPages = Math.max(1, Math.ceil(filteredRdv.length / PAR_PAGE));
+    const pageCourante = Math.min(page, totalPages);
+    const debutPage = (pageCourante - 1) * PAR_PAGE;
+    const rdvPage = filteredRdv.slice(debutPage, debutPage + PAR_PAGE);
+
+    /* Numéros de page affichés (fenêtre glissante de 5) */
+    const numerosPages = Array.from({ length: totalPages }, (_, i) => i + 1).slice(
+        Math.max(0, Math.min(pageCourante - 3, totalPages - 5)),
+        Math.max(0, Math.min(pageCourante - 3, totalPages - 5)) + 5
+    );
+
+    const getStatutStyle = (statut) => {
+        const s = (statut || "").toLowerCase();
+        if (s.includes("confirm")) return "bg-emerald-50 text-emerald-700 border border-emerald-100";
+        if (s.includes("annul")) return "bg-rose-50 text-rose-700 border border-rose-100";
+        return "bg-amber-50 text-amber-700 border border-amber-100";
+    };
+
+    if (loading) {
+        return (
+            <div className="min-h-screen bg-[#f8fafc] flex items-center justify-center p-6">
+                <div className="bg-white border border-slate-200/80 rounded-3xl p-8 shadow-xl flex flex-col items-center text-center">
+                    <div className="w-12 h-12 border-4 border-blue-600 border-t-transparent rounded-full animate-spin mb-4"></div>
+                    <p className="text-sm font-bold text-slate-700">Chargement des rendez-vous...</p>
+                </div>
+            </div>
+        );
+    }
+
+    return (
+        <div className="p-6 lg:p-8 space-y-6 max-w-7xl mx-auto">
+            {/* EN-TÊTE */}
+            <div className="rounded-2xl bg-gradient-to-r from-[#14532D] to-[#059669] shadow-sm px-5 py-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                <div>
+                    <h1 className="text-xl font-bold text-white">Mes rendez-vous</h1>
+                    <p className="text-sm text-emerald-50/90 mt-0.5">
+                        Consultez et gérez l'ensemble de vos consultations planifiées
+                    </p>
+                </div>
+
+               
+            </div>
+
+            {/* BANNIÈRE JOURS FÉRIÉS / FERMETURES */}
+            {feries.length > 0 && (
+                <div className="rounded-2xl border border-amber-200 bg-amber-50 p-3.5 flex items-start gap-3">
+                    <Info size={17} className="text-amber-600 mt-0.5 shrink-0" />
+                    <div className="text-xs text-amber-800 font-medium">
+                        <span className="font-bold">Périodes de fermeture : </span>
+                        {feries.map((f) => formaterFermeture(f)).join(" — ")}
+                        <span className="block text-amber-700/80 mt-0.5 font-normal">
+                            Aucun rendez-vous ne sera planifié ces jours-là.
+                        </span>
+                    </div>
+                </div>
+            )}
+
+            {/* COMPTEURS */}
+            <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+                <div className="flex items-center gap-3">
+                    <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-emerald-50 border border-blue-100 text-[11px] font-bold text-emerald-700">
+                        <CalendarDays size={13} />
+                        {filteredRdv.length} rendez-vous
+                    </span>
+                </div>
+            </div>
+
+            {/* ONGLETS PAR DATE */}
+            <div className="flex flex-wrap items-center gap-2">
+                {ONGLETS.map((o) => (
+                    <button
+                        key={o.id}
+                        type="button"
+                        onClick={() => {
+                            setOnglet(o.id);
+                            setPage(1); // retour à la première page à chaque changement d'onglet
+                        }}
+                        className={`inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl border text-xs font-semibold transition ${
+                            onglet === o.id
+                                ? "bg-emerald-600 border-emerald-600 text-white shadow-sm"
+                                : "bg-white border-slate-200 text-slate-600 hover:border-emerald-300 hover:text-emerald-700"
+                        }`}
+                    >
+                        {o.label}
+                        <span
+                            className={`rounded-full px-1.5 py-0.5 text-[10px] font-bold ${
+                                onglet === o.id
+                                    ? "bg-white/20 text-white"
+                                    : "bg-slate-100 text-slate-500"
+                            }`}
+                        >
+                            {o.count}
+                        </span>
+                    </button>
+                ))}
+            </div>
+
+            {/* TABLEAU OU ÉTAT VIDE */}
+            {filteredRdv.length === 0 ? (
+                <div className="bg-white rounded-3xl p-12 text-center border border-slate-200/80 shadow-sm">
+                    <div className="w-16 h-16 rounded-3xl bg-emerald-50 text-emerald-600 flex items-center justify-center mx-auto mb-3">
+                        <CalendarDays size={28} />
+                    </div>
+                    <h2 className="text-base font-black text-slate-800">Aucun rendez-vous</h2>
+                    <p className="text-xs text-slate-400 mt-1">
+                        {onglet === "aujourdhui"
+                            ? "Vous n'avez aucun rendez-vous prévu aujourd'hui."
+                            : onglet === "avenir"
+                            ? "Aucun rendez-vous à venir."
+                            : "Vous n'avez aucun rendez-vous pour le moment."}
+                    </p>
+                </div>
+            ) : (
+                <div className="bg-white rounded-3xl shadow-sm border border-slate-200/80 overflow-hidden">
+                    <div className="overflow-x-auto">
+                        <table className="w-full text-left border-collapse">
+                            <thead>
+                                <tr className="border-b border-slate-100 bg-slate-50/70 text-[11px] font-extrabold uppercase tracking-wider text-slate-400">
+                                    <th className="px-6 py-4">Patient</th>
+                                    <th className="px-6 py-4">Date</th>
+                                    <th className="px-6 py-4">Heure</th>
+                                    <th className="px-6 py-4">Type</th>
+                                    <th className="px-6 py-4">Statut</th>
+                                </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-100 text-xs">
+                                {rdvPage.map((rdv) => {
+                                    const initial = (rdv.patient?.prenom?.charAt(0) || rdv.patient?.nom?.charAt(0) || "P").toUpperCase();
+                                    return (
+                                        <tr key={rdv.id} className="hover:bg-slate-50/80 transition-colors">
+                                            <td className="px-6 py-4">
+                                                <div className="flex items-center gap-3">
+                                                    <div className="w-10 h-10 rounded-2xl bg-gradient-to-tr from-emerald-600 to-indigo-600 text-white flex items-center justify-center font-black text-xs shadow-sm">
+                                                        {initial}
+                                                    </div>
+                                                    <div>
+                                                        <p className="font-bold text-slate-800 text-xs">
+                                                            {rdv.patient?.prenom} {rdv.patient?.nom}
+                                                        </p>
+                                                        {rdv.patient?.telephone && (
+                                                            <span className="text-[10px] text-slate-400 font-medium">
+                                                                {rdv.patient.telephone}
+                                                            </span>
+                                                        )}
+                                                    </div>
+                                                </div>
+                                            </td>
+
+                                            <td className="px-6 py-4">
+                                                <div className="flex items-center gap-1.5 text-slate-600 font-medium">
+                                                    <CalendarDays size={13} className="text-slate-400" />
+                                                    <span>{rdv.date_rdv}</span>
+                                                </div>
+                                            </td>
+
+                                            <td className="px-6 py-4">
+                                                <div className="flex items-center gap-1.5 text-slate-600 font-medium">
+                                                    <Clock size={13} className="text-blue-500" />
+                                                    <span className="font-bold">{normalizeTime(rdv.heure_rdv)}</span>
+                                                </div>
+                                            </td>
+
+                                            <td className="px-6 py-4">
+                                                {rdv.mode === "video" ? (
+                                                    <div>
+                                                        <span className="inline-flex items-center gap-1.5 rounded-full bg-sky-50 text-sky-700 border border-sky-200 px-3 py-1 text-xs font-bold">
+                                                            <Video size={12} /> Vidéo
+                                                        </span>
+                                                        <a
+                                                            href="https://meet.google.com/"
+                                                            target="_blank"
+                                                            rel="noreferrer"
+                                                            className="mt-2 flex items-center gap-1 text-[10px] font-bold text-sky-600 hover:text-sky-800"
+                                                        >
+                                                            <Video size={11} />
+                                                            Rejoindre la visio
+                                                        </a>
+                                                    </div>
+                                                ) : (
+                                                    <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 px-3 py-1 text-xs font-bold">
+                                                        <MapPin size={12} /> Présentiel
+                                                    </span>
+                                                )}
+                                            </td>
+
+                                            <td className="px-6 py-4">
+                                                <span className={`inline-flex items-center px-3 py-1 rounded-full text-xs font-bold ${getStatutStyle(rdv.statut)}`}>
+                                                    {rdv.statut || "En attente"}
+                                                </span>
+                                            </td>
+                                        </tr>
+                                    );
+                                })}
+                            </tbody>
+                        </table>
+                    </div>
+
+                    {/* PAGINATION */}
+                    {totalPages > 1 && (
+                        <div className="flex flex-col sm:flex-row items-center justify-between gap-3 px-6 py-4 border-t border-slate-100 bg-slate-50/60">
+                            <p className="text-[11px] font-semibold text-slate-500">
+                                Affichage de {debutPage + 1} à {debutPage + rdvPage.length} sur {filteredRdv.length} rendez-vous
+                            </p>
+
+                            <div className="flex items-center gap-1.5">
+                                <button
+                                    type="button"
+                                    onClick={() => setPage(Math.max(1, pageCourante - 1))}
+                                    disabled={pageCourante === 1}
+                                    className="inline-flex items-center gap-1 px-3 py-2 rounded-xl border border-slate-200 bg-white text-xs font-bold text-slate-600 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed transition cursor-pointer"
+                                >
+                                    <ChevronLeft size={14} />
+                                    Précédent
+                                </button>
+
+                                {numerosPages.map((p) => (
+                                    <button
+                                        key={p}
+                                        type="button"
+                                        onClick={() => setPage(p)}
+                                        aria-current={p === pageCourante ? "page" : undefined}
+                                        className={`w-8 h-8 rounded-xl text-xs font-bold transition cursor-pointer ${
+                                            p === pageCourante
+                                                ? "bg-emerald-600 text-white shadow-sm"
+                                                : "bg-white border border-slate-200 text-slate-600 hover:bg-slate-50"
+                                        }`}
+                                    >
+                                        {p}
+                                    </button>
+                                ))}
+
+                                <button
+                                    type="button"
+                                    onClick={() => setPage(Math.min(totalPages, pageCourante + 1))}
+                                    disabled={pageCourante === totalPages}
+                                    className="inline-flex items-center gap-1 px-3 py-2 rounded-xl border border-slate-200 bg-white text-xs font-bold text-slate-600 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed transition cursor-pointer"
+                                >
+                                    Suivant
+                                    <ChevronRight size={14} />
+                                </button>
+                            </div>
+                        </div>
+                    )}
+                </div>
+            )}
+        </div>
+    );
+}

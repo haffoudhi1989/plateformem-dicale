@@ -1,0 +1,914 @@
+import React, { useEffect, useState, useCallback, useMemo } from "react";
+import { useNavigate } from "react-router-dom";
+import {
+    Search,
+    Building2,
+    ClipboardList,
+    CheckCircle2,
+    XCircle,
+    Loader2,
+    Pencil,
+    UserRound,
+    Users,
+    Stethoscope,
+    RefreshCw,
+    X,
+    CalendarDays,
+    ChevronLeft,
+    ChevronRight
+} from "lucide-react";
+
+// CRA : la variable est exposée via process.env.REACT_APP_*.
+// Fallback identique au reste de l'application (127.0.0.1 et non localhost).
+const BASE_URL =
+    process.env.REACT_APP_API_URL || "http://127.0.0.1:8000/api";
+const API_URL = `${BASE_URL}/cabinets`;
+
+function CabinetList() {
+    const navigate = useNavigate();
+
+    const [cabinets, setCabinets] = useState([]);
+    const [cabinetFilter, setCabinetFilter] = useState("");
+    const [medecinFilter, setMedecinFilter] = useState("");
+    const [dateFilter, setDateFilter] = useState("");
+    const [currentPage, setCurrentPage] = useState(1);
+    const [loading, setLoading] = useState(true);
+    const [updatingId, setUpdatingId] = useState(null);
+    const [feedback, setFeedback] = useState(null);
+    const [hasLoaded, setHasLoaded] = useState(false);
+    const [selectedCabinetForPatients, setSelectedCabinetForPatients] = useState(null);
+    const [patientModalSearch, setPatientModalSearch] = useState("");
+
+    /* =====================================================
+       AUTHENTIFICATION
+    ===================================================== */
+    const getAuthHeaders = useCallback(() => {
+        const token =
+            localStorage.getItem("token") ||
+            localStorage.getItem("access_token") ||
+            localStorage.getItem("auth_token") ||
+            localStorage.getItem("userToken") ||
+            sessionStorage.getItem("token") ||
+            sessionStorage.getItem("access_token");
+
+        return {
+            Accept: "application/json",
+            "Content-Type": "application/json",
+            ...(token ? { Authorization: `Bearer ${token}` } : {})
+        };
+    }, []);
+
+    /* =====================================================
+       CHARGER LES CABINETS (AVEC GESTION MULTI-FORMATS)
+    ===================================================== */
+    const fetchCabinets = useCallback(async () => {
+        try {
+            setLoading(true);
+            setFeedback(null);
+
+            let response;
+            try {
+                response = await fetch(API_URL, {
+                    method: "GET",
+                    headers: getAuthHeaders()
+                });
+            } catch (networkErr) {
+                const fallbackUrl = "http://127.0.0.1:8000/api/cabinets";
+                response = await fetch(fallbackUrl, {
+                    method: "GET",
+                    headers: getAuthHeaders()
+                });
+            }
+
+            if (response.status === 401) {
+                throw new Error("Session expirée. Veuillez vous reconnecter.");
+            }
+
+            const result = await response.json();
+
+            if (!response.ok) {
+                throw new Error(
+                    result.message || "Impossible de charger les cabinets."
+                );
+            }
+
+            let list = [];
+            if (Array.isArray(result)) {
+                list = result;
+            } else if (Array.isArray(result?.data)) {
+                list = result.data;
+            } else if (Array.isArray(result?.data?.data)) {
+                list = result.data.data;
+            } else if (Array.isArray(result?.cabinets)) {
+                list = result.cabinets;
+            }
+
+            setCabinets(list);
+            setHasLoaded(true);
+        } catch (error) {
+            console.error("Erreur chargement cabinets :", error);
+            setFeedback({
+                type: "error",
+                text: error.message || "Erreur de communication avec le serveur."
+            });
+        } finally {
+            setLoading(false);
+        }
+    }, [getAuthHeaders]);
+
+    useEffect(() => {
+        fetchCabinets();
+    }, [fetchCabinets]);
+
+    /* =====================================================
+       NOM COMPLET
+    ===================================================== */
+    const getFullName = (personne) => {
+        if (!personne) return "Nom inconnu";
+
+        const prenom = personne.prenom || personne.first_name || "";
+        const nom = personne.nom || personne.name || personne.last_name || "";
+        const fullName = `${prenom} ${nom}`.trim();
+
+        return fullName || "Nom inconnu";
+    };
+
+    /* =====================================================
+       LISTES DES MEMBRES
+    ===================================================== */
+    const getMedecins = (cabinet) =>
+        Array.isArray(cabinet?.medecins) ? cabinet.medecins : [];
+    const getPatients = (cabinet) =>
+        Array.isArray(cabinet?.patients) ? cabinet.patients : [];
+    const getSecretaires = (cabinet) =>
+        Array.isArray(cabinet?.secretaires) ? cabinet.secretaires : [];
+
+    // Récupère l'identifiant du médecin associé à un patient, quelle que soit la forme des données
+    const getPatientMedecinId = (patient) => {
+        if (patient?.medecin?.id != null) return patient.medecin.id;
+        if (patient?.medecin_id != null) return patient.medecin_id;
+        if (patient?.medecinId != null) return patient.medecinId;
+        return null;
+    };
+
+    /* =====================================================
+       OPTIONS DE FILTRE — MÉDECINS (dépendent du cabinet choisi)
+    ===================================================== */
+    const medecinOptions = useMemo(() => {
+        const source = cabinetFilter
+            ? cabinets.filter((c) => String(c.id) === String(cabinetFilter))
+            : cabinets;
+
+        const map = new Map();
+        source.forEach((cabinet) => {
+            getMedecins(cabinet).forEach((medecin) => {
+                map.set(String(medecin.id), medecin);
+            });
+        });
+        return Array.from(map.values());
+    }, [cabinets, cabinetFilter]);
+
+    // Réinitialise le médecin sélectionné s'il n'appartient plus au cabinet filtré
+    useEffect(() => {
+        if (!medecinFilter) return;
+        const stillValid = medecinOptions.some(
+            (m) => String(m.id) === String(medecinFilter)
+        );
+        if (!stillValid) setMedecinFilter("");
+    }, [medecinOptions, medecinFilter]);
+
+    /* =====================================================
+       FILTRAGE (CABINET + MÉDECIN + DATE DE CRÉATION)
+    ===================================================== */
+    const filteredCabinets = cabinets.filter((cabinet) => {
+        if (!cabinet) return false;
+
+        if (cabinetFilter && String(cabinet.id) !== String(cabinetFilter)) {
+            return false;
+        }
+
+        if (medecinFilter) {
+            const hasMedecin = getMedecins(cabinet).some(
+                (m) => String(m.id) === String(medecinFilter)
+            );
+            if (!hasMedecin) return false;
+        }
+
+        if (dateFilter) {
+            const created = String(cabinet.created_at || "").slice(0, 10);
+            if (created !== dateFilter) return false;
+        }
+
+        return true;
+    });
+
+    const hasActiveFilters =
+        cabinetFilter || medecinFilter || dateFilter;
+
+    const resetFilters = () => {
+        setCabinetFilter("");
+        setMedecinFilter("");
+        setDateFilter("");
+    };
+
+    // ============================
+    // Pagination
+    // ============================
+
+    const PAGE_SIZE = 10;
+
+    const totalPages = Math.max(
+        1,
+        Math.ceil(filteredCabinets.length / PAGE_SIZE)
+    );
+
+    const safePage = Math.min(currentPage, totalPages);
+
+    const paginatedCabinets = filteredCabinets.slice(
+        (safePage - 1) * PAGE_SIZE,
+        safePage * PAGE_SIZE
+    );
+
+    useEffect(() => {
+        setCurrentPage(1);
+    }, [cabinetFilter, medecinFilter, dateFilter]);
+
+    useEffect(() => {
+        if (currentPage > totalPages) {
+            setCurrentPage(totalPages);
+        }
+    }, [currentPage, totalPages]);
+
+    const getPageNumbers = () => {
+        if (totalPages <= 7) {
+            return Array.from({ length: totalPages }, (_, i) => i + 1);
+        }
+
+        const pages = [1];
+        const start = Math.max(2, safePage - 1);
+        const end = Math.min(totalPages - 1, safePage + 1);
+
+        if (start > 2) pages.push("…");
+        for (let i = start; i <= end; i += 1) pages.push(i);
+        if (end < totalPages - 1) pages.push("…");
+
+        pages.push(totalPages);
+        return pages;
+    };
+
+    /* =====================================================
+       VALIDER / REFUSER
+    ===================================================== */
+    const handleStatut = async (cabinet, actif) => {
+        setUpdatingId(cabinet.id);
+        setFeedback(null);
+
+        try {
+            const response = await fetch(`${API_URL}/${cabinet.id}/statut`, {
+                method: "PATCH",
+                headers: getAuthHeaders(),
+                body: JSON.stringify({ actif })
+            });
+
+            const result = await response.json();
+
+            if (!response.ok) {
+                throw new Error(
+                    result.message || "Erreur lors du changement d'état."
+                );
+            }
+
+            const newActif =
+                result.actif !== undefined
+                    ? Boolean(result.actif)
+                    : Boolean(actif);
+
+            setCabinets((previous) =>
+                previous.map((c) =>
+                    c.id === cabinet.id ? { ...c, actif: newActif } : c
+                )
+            );
+
+            setFeedback({
+                type: "success",
+                text: newActif
+                    ? `Cabinet « ${cabinet.nom} » validé (Actif).`
+                    : `Cabinet « ${cabinet.nom} » mis en attente.`
+            });
+        } catch (error) {
+            console.error("Erreur changement statut :", error);
+            setFeedback({
+                type: "error",
+                text: error.message
+            });
+        } finally {
+            setUpdatingId(null);
+        }
+    };
+
+    /* =====================================================
+       AFFICHAGE MÉDECINS
+    ===================================================== */
+    const renderMedecins = (cabinet) => {
+        const medecins = getMedecins(cabinet);
+
+        if (medecins.length === 0) {
+            return (
+                <span className="text-xs text-slate-400">
+                    Aucun médecin
+                </span>
+            );
+        }
+
+        return (
+            <div className="space-y-1.5">
+                {medecins.map((medecin) => {
+                    const isHighlighted =
+                        medecinFilter &&
+                        String(medecin.id) === String(medecinFilter);
+
+                    return (
+                        <div
+                            key={medecin.id}
+                            className={`
+                                flex items-center gap-2
+                                px-2.5 py-1.5 rounded-lg
+                                text-xs font-medium
+                                ${
+                                    isHighlighted
+                                        ? "bg-blue-600 text-white ring-2 ring-blue-300"
+                                        : "bg-blue-50 text-blue-700"
+                                }
+                            `}
+                        >
+                            <Stethoscope size={13} className="shrink-0" />
+                            <span className="min-w-0 flex-1 truncate">
+                                Dr. {getFullName(medecin)}
+                            </span>
+                        </div>
+                    );
+                })}
+            </div>
+        );
+    };
+
+    /* =====================================================
+       AFFICHAGE SECRÉTAIRES
+    ===================================================== */
+    const renderSecretaires = (cabinet) => {
+        const secretaires = getSecretaires(cabinet);
+
+        if (secretaires.length === 0) {
+            return (
+                <span className="text-xs text-slate-400">
+                    Aucune secrétaire
+                </span>
+            );
+        }
+
+        return (
+            <div className="space-y-1.5">
+                {secretaires.map((secretaire) => (
+                    <div
+                        key={secretaire.id}
+                        className="
+                            flex items-center gap-2
+                            px-2.5 py-1.5 rounded-lg
+                            bg-purple-50 text-purple-700
+                            text-xs font-medium
+                        "
+                    >
+                        <Users size={13} className="shrink-0" />
+                        <span className="min-w-0 flex-1 truncate">
+                            {getFullName(secretaire)}
+                        </span>
+                    </div>
+                ))}
+            </div>
+        );
+    };
+
+    /* =====================================================
+       RENDER
+    ===================================================== */
+    return (
+        <div className="min-h-screen bg-slate-50 overflow-x-hidden">
+            {/* EN-TÊTE */}
+                        <div className="rounded-2xl bg-gradient-to-r from-[#26415E] to-[#3A5570] shadow-lg shadow-blue-200/60 p-4 md:p-5 flex flex-col lg:flex-row lg:items-center justify-between gap-3 min-h-[88px] md:min-h-[96px] mb-4">
+                <div className="flex items-center gap-4">
+                    <div className="w-14 h-14 rounded-2xl bg-white/10 border border-white/20 flex items-center justify-center shrink-0">
+                        <Building2 size={26} className="text-white" />
+                    </div>
+                    <div>
+                        <h1 className="text-lg md:text-xl font-bold text-white mt-0.5">
+                            Liste des cabinets
+                        </h1>
+                        <p className="text-blue-100 text-sm mt-0.5">
+                            Chaque cabinet : un seul médecin, plusieurs patients et des secrétaires
+                        </p>
+                    </div>
+                </div>
+                <div className="flex flex-wrap items-center gap-2.5">
+                
+                </div>
+            </div>
+
+            {/* FILTRES (alignés à droite sur desktop) */}
+            <div className="flex flex-col lg:flex-row lg:items-center lg:justify-end gap-3 mb-6">
+                {/* FILTRE CABINET */}
+                <div className="relative min-w-[190px]">
+                    <Building2
+                        size={15}
+                        className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none"
+                    />
+                    <select
+                        value={cabinetFilter}
+                        onChange={(e) => setCabinetFilter(e.target.value)}
+                        className="w-full appearance-none px-4 py-2.5 pl-9 rounded-xl border border-slate-200 bg-white text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent cursor-pointer"
+                    >
+                        <option value="">Tous les cabinets</option>
+                        {cabinets.map((cabinet) => (
+                            <option key={cabinet.id} value={cabinet.id}>
+                                {cabinet.nom}
+                            </option>
+                        ))}
+                    </select>
+                </div>
+
+                {/* FILTRE MÉDECIN */}
+                <div className="relative min-w-[190px]">
+                    <Stethoscope
+                        size={15}
+                        className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none"
+                    />
+                    <select
+                        value={medecinFilter}
+                        onChange={(e) => setMedecinFilter(e.target.value)}
+                        disabled={medecinOptions.length === 0}
+                        className="w-full appearance-none px-4 py-2.5 pl-9 rounded-xl border border-slate-200 bg-white text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent cursor-pointer disabled:opacity-50"
+                    >
+                        <option value="">Tous les médecins</option>
+                        {medecinOptions.map((medecin) => (
+                            <option key={medecin.id} value={medecin.id}>
+                                Dr. {getFullName(medecin)}
+                            </option>
+                        ))}
+                    </select>
+                </div>
+
+                {/* FILTRE DATE DE CRÉATION */}
+                <div className="flex items-center gap-1.5 shrink-0">
+                    <CalendarDays size={15} className="text-slate-400" />
+
+                    <input
+                        type="date"
+                        value={dateFilter}
+                        onChange={(e) => setDateFilter(e.target.value)}
+                        title="Filtrer par date de création du cabinet"
+                        className="px-3 py-2.5 rounded-xl border border-slate-200 bg-white text-sm text-slate-600 focus:outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer"
+                    />
+
+                    {dateFilter && (
+                        <button
+                            type="button"
+                            onClick={() => setDateFilter("")}
+                            title="Effacer le filtre de date"
+                            className="p-2 rounded-lg text-slate-400 hover:bg-slate-100 hover:text-slate-600 transition cursor-pointer"
+                        >
+                            <X size={14} />
+                        </button>
+                    )}
+                </div>
+
+                {hasActiveFilters && (
+                    <button
+                        type="button"
+                        onClick={resetFilters}
+                        className="inline-flex items-center gap-1.5 px-3 py-2.5 rounded-xl text-xs font-semibold text-slate-500 hover:bg-slate-100 transition shrink-0"
+                    >
+                        <X size={14} />
+                        Réinitialiser
+                    </button>
+                )}
+            </div>
+
+            {/* MESSAGE FEEDBACK */}
+            {feedback && (
+                <div className="mb-5">
+                    <div
+                        className={`flex items-center gap-2.5 px-4 py-3 rounded-xl text-sm font-medium ${
+                            feedback.type === "success"
+                                ? "bg-emerald-50 text-emerald-700"
+                                : "bg-red-50 text-red-700"
+                        }`}
+                    >
+                        {feedback.type === "success" ? (
+                            <CheckCircle2 size={16} />
+                        ) : (
+                            <XCircle size={16} />
+                        )}
+                        {feedback.text}
+                    </div>
+                </div>
+            )}
+
+            {/* LISTE */}
+            <div className="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden">
+                <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100">
+                    <div className="flex items-center gap-3">
+                        <div className="w-9 h-9 rounded-xl bg-blue-50 flex items-center justify-center">
+                            <ClipboardList size={18} className="text-blue-600" />
+                        </div>
+                        <div>
+                            <h2 className="font-bold text-slate-900 text-sm">Cabinets</h2>
+                            <p className="text-xs text-slate-400 mt-0.5">
+                                {filteredCabinets.length} cabinet(s) affiché(s)
+                            </p>
+                        </div>
+                    </div>
+                </div>
+
+                {/* LOADING */}
+                {loading ? (
+                    <div className="p-12 text-center">
+                        <Loader2
+                            size={28}
+                            className="text-blue-500 mx-auto mb-3 animate-spin"
+                        />
+                        <p className="text-sm text-slate-400 font-medium">
+                            Chargement des cabinets...
+                        </p>
+                    </div>
+                ) : feedback?.type === "error" && cabinets.length === 0 ? (
+                    <div className="p-12 text-center">
+                        <XCircle
+                            size={34}
+                            className="text-red-400 mx-auto mb-3"
+                        />
+                        <p className="text-sm text-slate-600 font-medium">
+                            {feedback.text || "Impossible de charger les cabinets."}
+                        </p>
+                        <button
+                            type="button"
+                            onClick={fetchCabinets}
+                            className="mt-5 inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-blue-600 text-white text-sm font-semibold shadow-md hover:bg-blue-700 transition cursor-pointer"
+                        >
+                            <RefreshCw size={15} />
+                            Réessayer
+                        </button>
+                    </div>
+                ) : filteredCabinets.length === 0 ? (
+                    <div className="p-12 text-center">
+                        <Building2
+                            size={34}
+                            className="text-slate-300 mx-auto mb-3"
+                        />
+                        <p className="text-sm text-slate-400 font-medium">
+                            {hasActiveFilters
+                                ? "Aucun cabinet ne correspond à ces critères."
+                                : "Aucun cabinet trouvé."}
+                        </p>
+                    </div>
+                ) : (
+                    <div className="w-full">
+                        <table className="w-full text-sm table-fixed">
+                            <thead>
+                                <tr className="text-left text-xs text-slate-400 uppercase tracking-wide border-b border-slate-100 bg-slate-50">
+                                    <th style={{ width: "19%" }} className="px-4 py-3 font-semibold">Cabinet</th>
+                                    <th style={{ width: "16%" }} className="px-4 py-3 font-semibold">Adresse</th>
+                                    <th style={{ width: "13%" }} className="px-4 py-3 font-semibold">Téléphone</th>
+                                    <th style={{ width: "15%" }} className="px-4 py-3 font-semibold">Médecin</th>
+                                    <th style={{ width: "14%" }} className="px-4 py-3 font-semibold">Secrétaires</th>
+                                    <th style={{ width: "10%" }} className="px-3 py-3 font-semibold">Statut</th>
+                                    <th style={{ width: "13%" }} className="px-3 py-3 font-semibold text-right">Action</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {paginatedCabinets.map((cabinet) => {
+                                    const updating = updatingId === cabinet.id;
+
+                                    return (
+                                        <tr
+                                            key={cabinet.id}
+                                            className="border-b border-slate-50 hover:bg-slate-50/60 transition align-top"
+                                        >
+                                            <td className="px-4 py-3">
+                                                <button
+                                                    type="button"
+                                                    onClick={() =>
+                                                        navigate(
+                                                            `/admin/cabinet?cabinet=${cabinet.id}`
+                                                        )
+                                                    }
+                                                    className="flex items-center gap-2 font-semibold text-slate-800 hover:text-blue-600 text-left"
+                                                >
+                                                    <Building2
+                                                        size={15}
+                                                        className="text-blue-500 shrink-0"
+                                                    />
+                                                    {cabinet.nom}
+                                                </button>
+                                                {cabinet.email && (
+                                                    <p className="text-xs text-slate-400 mt-1 break-all">
+                                                        {cabinet.email}
+                                                    </p>
+                                                )}
+                                            </td>
+
+                                            <td className="px-4 py-3 text-slate-500 break-words">
+                                                {cabinet.adresse || "-"}
+                                            </td>
+
+                                            <td className="px-4 py-3 text-slate-500">
+                                                {cabinet.telephone || "-"}
+                                            </td>
+
+                                            <td className="px-4 py-3">
+                                                {renderMedecins(cabinet)}
+                                            </td>
+
+                                            <td className="px-4 py-3">
+                                                {renderSecretaires(cabinet)}
+                                            </td>
+
+                                            <td className="px-3 py-3">
+                                                <span
+                                                    className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold ${
+                                                        cabinet.actif
+                                                            ? "bg-emerald-100 text-emerald-700"
+                                                            : "bg-amber-100 text-amber-700"
+                                                    }`}
+                                                >
+                                                    <span
+                                                        className={`w-2 h-2 rounded-full ${
+                                                            cabinet.actif
+                                                                ? "bg-emerald-500"
+                                                                : "bg-amber-500"
+                                                        }`}
+                                                    />
+                                                    {cabinet.actif
+                                                        ? "Actif"
+                                                        : "En attente"}
+                                                </span>
+                                            </td>
+
+                                            <td className="px-3 py-3">
+                                                <div className="flex items-center justify-end gap-1.5">
+                                                    {/* Bouton Voir Patients */}
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => {
+                                                            setSelectedCabinetForPatients(cabinet);
+                                                            setPatientModalSearch("");
+                                                        }}
+                                                        title={`Voir les patients (${getPatients(cabinet).length})`}
+                                                        className="inline-flex items-center justify-center p-2 rounded-lg text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 transition cursor-pointer relative"
+                                                    >
+                                                        <UserRound size={15} />
+                                                        {getPatients(cabinet).length > 0 && (
+                                                            <span className="absolute -top-1 -right-1 bg-emerald-600 text-white text-[9px] font-bold rounded-full w-4 h-4 flex items-center justify-center shadow-xs">
+                                                                {getPatients(cabinet).length}
+                                                            </span>
+                                                        )}
+                                                    </button>
+
+                                                    <button
+                                                        type="button"
+                                                        disabled={updating}
+                                                        onClick={() =>
+                                                            navigate(
+                                                                `/admin/cabinet?cabinet=${cabinet.id}`
+                                                            )
+                                                        }
+                                                        title="Gérer le cabinet"
+                                                        className="inline-flex items-center justify-center p-2 rounded-lg text-slate-500 hover:bg-slate-100 transition disabled:opacity-50"
+                                                    >
+                                                        <Pencil size={15} />
+                                                    </button>
+
+                                                    {cabinet.actif ? (
+                                                        <button
+                                                            type="button"
+                                                            disabled={updating}
+                                                            onClick={() =>
+                                                                handleStatut(
+                                                                    cabinet,
+                                                                    false
+                                                                )
+                                                            }
+                                                            title="Refuser le cabinet"
+                                                            className="p-2 rounded-lg border border-red-200 text-red-600 hover:bg-red-50 transition disabled:opacity-50"
+                                                        >
+                                                            {updating ? (
+                                                                <Loader2
+                                                                    size={14}
+                                                                    className="animate-spin"
+                                                                />
+                                                            ) : (
+                                                                <XCircle
+                                                                    size={14}
+                                                                />
+                                                            )}
+                                                        </button>
+                                                    ) : (
+                                                        <button
+                                                            type="button"
+                                                            disabled={updating}
+                                                            onClick={() =>
+                                                                handleStatut(
+                                                                    cabinet,
+                                                                    true
+                                                                )
+                                                            }
+                                                            title="Valider le cabinet"
+                                                            className="p-2 rounded-lg border border-emerald-200 text-emerald-600 hover:bg-emerald-50 transition disabled:opacity-50"
+                                                        >
+                                                            {updating ? (
+                                                                <Loader2
+                                                                    size={14}
+                                                                    className="animate-spin"
+                                                                />
+                                                            ) : (
+                                                                <CheckCircle2
+                                                                    size={14}
+                                                                />
+                                                            )}
+                                                        </button>
+                                                    )}
+                                                </div>
+                                            </td>
+                                        </tr>
+                                    );
+                                })}
+                            </tbody>
+                        </table>
+                    </div>
+                )}
+
+                {/* PAGINATION */}
+                {!loading && filteredCabinets.length > 0 && totalPages > 1 && (
+                    <div className="px-4 py-3 border-t border-slate-100 flex flex-col sm:flex-row items-center justify-between gap-3">
+                        <p className="text-xs text-slate-400 font-medium">
+                            {filteredCabinets.length} cabinet(s) · Page{" "}
+                            {safePage} / {totalPages}
+                        </p>
+
+                        <div className="flex items-center gap-1">
+                            <button
+                                type="button"
+                                disabled={safePage === 1}
+                                onClick={() =>
+                                    setCurrentPage((p) => Math.max(1, p - 1))
+                                }
+                                className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-semibold text-slate-600 hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed transition cursor-pointer"
+                            >
+                                <ChevronLeft size={14} />
+                                Précédent
+                            </button>
+
+                            {getPageNumbers().map((num, idx) =>
+                                num === "…" ? (
+                                    <span
+                                        key={`points-${idx}`}
+                                        className="px-1.5 text-xs text-slate-400"
+                                    >
+                                        …
+                                    </span>
+                                ) : (
+                                    <button
+                                        key={num}
+                                        type="button"
+                                        onClick={() => setCurrentPage(num)}
+                                        className={`w-8 h-8 rounded-lg text-xs font-bold transition cursor-pointer ${
+                                            num === safePage
+                                                ? "bg-[#26415E] text-white shadow-sm"
+                                                : "text-slate-600 hover:bg-slate-100"
+                                        }`}
+                                    >
+                                        {num}
+                                    </button>
+                                )
+                            )}
+
+                            <button
+                                type="button"
+                                disabled={safePage === totalPages}
+                                onClick={() =>
+                                    setCurrentPage((p) =>
+                                        Math.min(totalPages, p + 1)
+                                    )
+                                }
+                                className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-semibold text-slate-600 hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed transition cursor-pointer"
+                            >
+                                Suivant
+                                <ChevronRight size={14} />
+                            </button>
+                        </div>
+                    </div>
+                )}
+            </div>
+
+            {/* =====================================================
+                MODAL LISTE DES PATIENTS DU CABINET
+            ===================================================== */}
+            {selectedCabinetForPatients && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center p-3 bg-black/50 backdrop-blur-xs animate-fadeIn">
+                    <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-lg max-h-[85vh] flex flex-col overflow-hidden">
+                        {/* Header Modal */}
+                        <div className="bg-gradient-to-r from-[#26415E] to-[#3A5570] p-4 text-white flex items-center justify-between">
+                            <div className="flex items-center gap-2.5">
+                                <div className="w-8 h-8 rounded-lg bg-white/10 flex items-center justify-center">
+                                    <UserRound size={18} className="text-white" />
+                                </div>
+                                <div>
+                                    <h3 className="font-bold text-sm leading-tight">
+                                        Patients · {selectedCabinetForPatients.nom}
+                                    </h3>
+                                    <p className="text-[11px] text-blue-100">
+                                        {getPatients(selectedCabinetForPatients).length} patient(s) rattaché(s)
+                                    </p>
+                                </div>
+                            </div>
+                            <button
+                                type="button"
+                                onClick={() => setSelectedCabinetForPatients(null)}
+                                className="p-1 rounded-lg text-white/80 hover:bg-white/10 hover:text-white transition cursor-pointer"
+                            >
+                                <X size={18} />
+                            </button>
+                        </div>
+
+                        {/* Recherche de patients */}
+                        <div className="p-3 border-b border-slate-100 bg-slate-50">
+                            <div className="relative">
+                                <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                                <input
+                                    type="text"
+                                    value={patientModalSearch}
+                                    onChange={(e) => setPatientModalSearch(e.target.value)}
+                                    placeholder="Rechercher par nom, téléphone, email..."
+                                    className="w-full pl-8 pr-3 py-1.5 text-xs rounded-lg border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+                                />
+                            </div>
+                        </div>
+
+                        {/* Liste des patients */}
+                        <div className="p-4 overflow-y-auto flex-1 divide-y divide-slate-100">
+                            {(() => {
+                                const allP = getPatients(selectedCabinetForPatients);
+                                const q = patientModalSearch.toLowerCase().trim();
+                                const filtered = allP.filter((p) => {
+                                    const fullName = getFullName(p).toLowerCase();
+                                    const tel = (p.telephone || "").toLowerCase();
+                                    const email = (p.email || "").toLowerCase();
+                                    return !q || fullName.includes(q) || tel.includes(q) || email.includes(q);
+                                });
+
+                                if (filtered.length === 0) {
+                                    return (
+                                        <div className="py-8 text-center text-slate-400 text-xs">
+                                            <UserRound size={26} className="mx-auto mb-2 text-slate-300" />
+                                            {q ? "Aucun patient ne correspond à la recherche." : "Aucun patient enregistré dans ce cabinet."}
+                                        </div>
+                                    );
+                                }
+
+                                return filtered.map((patient) => (
+                                    <div key={patient.id} className="py-2.5 first:pt-0 last:pb-0 flex items-center gap-2.5">
+                                        <div className="w-8 h-8 rounded-full bg-emerald-50 text-emerald-700 flex items-center justify-center font-bold text-xs shrink-0">
+                                            {(patient.prenom?.[0] || "") + (patient.nom?.[0] || "") || "P"}
+                                        </div>
+                                        <div className="min-w-0">
+                                            <p className="font-semibold text-xs text-slate-800 truncate">
+                                                {getFullName(patient)}
+                                            </p>
+                                            <p className="text-[11px] text-slate-400 truncate">
+                                                {patient.telephone || patient.email || "Aucun contact"}
+                                            </p>
+                                        </div>
+                                    </div>
+                                ));
+                            })()}
+                        </div>
+
+                        {/* Footer Modal */}
+                        <div className="p-3 bg-slate-50 border-t border-slate-100 flex items-center justify-between text-xs">
+                            <span className="text-slate-500 font-medium">
+                                Total : {getPatients(selectedCabinetForPatients).length} patient(s)
+                            </span>
+                            <button
+                                type="button"
+                                onClick={() => setSelectedCabinetForPatients(null)}
+                                className="px-3.5 py-1.5 rounded-lg border border-slate-200 text-slate-700 font-semibold bg-white hover:bg-slate-100 transition cursor-pointer"
+                            >
+                                Fermer
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+        </div>
+    );
+}
+
+export default CabinetList;

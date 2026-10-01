@@ -1,0 +1,402 @@
+import React, { useEffect, useState } from "react";
+import axios from "axios";
+import {
+    ArrowLeft,
+    Activity,
+    Calendar,
+    CheckCircle,
+    ClipboardList,
+    Clock,
+    Droplets,
+    FlaskConical,
+    RefreshCw,
+    ScanLine,
+} from "lucide-react";
+import { useNavigate } from "react-router-dom";
+
+const API_URL = process.env.REACT_APP_API_URL || "http://127.0.0.1:8000/api";
+
+// =====================================================
+// TOKEN
+// =====================================================
+
+const getToken = () =>
+    localStorage.getItem("token") || sessionStorage.getItem("token");
+
+// =====================================================
+// OUTILS D'AFFICHAGE
+// =====================================================
+
+const formatDate = (date) => {
+    if (!date) return "Date inconnue";
+
+    const parsedDate = new Date(date);
+
+    if (isNaN(parsedDate.getTime())) return date;
+
+    return parsedDate.toLocaleDateString("fr-FR", {
+        day: "2-digit",
+        month: "long",
+        year: "numeric",
+    });
+};
+
+const getStatusInfo = (statut) => {
+    const s = String(statut || "").toLowerCase();
+
+    if (["termin", "valide", "complete", "disponible", "publie"].some((k) => s.includes(k))) {
+        return {
+            label: statut || "Terminé",
+            cls: "border-emerald-200 bg-emerald-50 text-emerald-700",
+            dot: "bg-emerald-500",
+        };
+    }
+
+    if (["attente", "en cours", "pending", "programme", "prevue"].some((k) => s.includes(k))) {
+        return {
+            label: statut || "En attente",
+            cls: "border-amber-200 bg-amber-50 text-amber-700",
+            dot: "bg-amber-500",
+        };
+    }
+
+    if (["annul", "refus", "rejete", "echec", "invalide"].some((k) => s.includes(k))) {
+        return {
+            label: statut || "Annulée",
+            cls: "border-red-200 bg-red-50 text-red-700",
+            dot: "bg-red-500",
+        };
+    }
+
+    return {
+        label: statut || "Analyse",
+        cls: "border-sky-200 bg-sky-50 text-sky-700",
+        dot: "bg-sky-500",
+    };
+};
+
+const getTypeIcon = (type) => {
+    const t = String(type || "").toLowerCase();
+
+    if (["radio", "scanner", "scan", "irm", "echo", "échograph"].some((k) => t.includes(k))) {
+        return ScanLine;
+    }
+
+    if (["sang", "prise", "bio", "hem", "hém", "urine"].some((k) => t.includes(k))) {
+        return Droplets;
+    }
+
+    if (["cœur", "coeur", "cardio", "ecg", "tension"].some((k) => t.includes(k))) {
+        return Activity;
+    }
+
+    return FlaskConical;
+};
+
+// =====================================================
+// COMPOSANT
+// =====================================================
+
+export default function PatientAnalyses() {
+    const navigate = useNavigate();
+
+    const [analyses, setAnalyses] = useState([]);
+    const [loading, setLoading] = useState(true);
+    const [error, setError] = useState("");
+
+    // =================================================
+    // CHARGER LES ANALYSES
+    // =================================================
+
+    const loadAnalyses = async () => {
+        const token = getToken();
+
+        if (!token) {
+            navigate("/login");
+            return;
+        }
+
+        try {
+            setLoading(true);
+            setError("");
+
+            const response = await axios.get(`${API_URL}/patient/analyses`, {
+                headers: {
+                    Authorization: `Bearer ${token}`,
+                    Accept: "application/json",
+                },
+            });
+
+            setAnalyses(response.data?.analyses || response.data?.data || []);
+        } catch (err) {
+            if (err.response?.status === 401) {
+                localStorage.removeItem("token");
+                sessionStorage.removeItem("token");
+                navigate("/login");
+                return;
+            }
+
+            setError(
+                err.response?.data?.message ||
+                "Impossible de charger vos analyses."
+            );
+            setAnalyses([]);
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    useEffect(() => {
+        loadAnalyses();
+    }, []);
+
+    const total = analyses.length;
+    const avecResultat = analyses.filter(
+        (a) => a.resultat && String(a.resultat).trim() !== ""
+    ).length;
+    const enAttente = total - avecResultat;
+
+    // =================================================
+    // AFFICHAGE
+    // =================================================
+
+    return (
+        <div className="bg-slate-50">
+            <div className="mx-auto max-w-6xl px-6 py-10">
+
+                {/* =================================================
+                    EN-TÊTE
+                ================================================= */}
+
+                <header className="mb-8 flex flex-wrap items-center justify-between gap-4">
+                    <div className="flex items-center gap-4">
+                        <div className="hidden h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-sky-500 to-blue-600 text-white shadow-md shadow-sky-200 sm:flex">
+                            <FlaskConical size={22} />
+                        </div>
+                        <div>                            <div className="mt-0.5 flex items-center gap-3">
+                                <h1 className="text-2xl font-bold text-slate-900">
+                                    Mes analyses
+                                </h1>
+                                {!loading && total > 0 && (
+                                    <span className="rounded-full border border-sky-100 bg-sky-50 px-2.5 py-0.5 text-xs font-semibold text-sky-700">
+                                        {total}
+                                    </span>
+                                )}
+                            </div>
+                            <p className="mt-0.5 text-sm text-slate-500">
+                                Consultez vos résultats d'examens médicaux
+                            </p>
+                        </div>
+                    </div>
+                    <div className="flex gap-2">
+                        <button
+                            type="button"
+                            onClick={loadAnalyses}
+                            aria-label="Actualiser"
+                            className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-500 transition hover:bg-slate-100 hover:text-slate-900"
+                        >
+                            <RefreshCw size={16} />
+                        </button>
+                        <button
+                            type="button"
+                            onClick={() => navigate("/patient/dashboard")}
+                            className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-medium text-slate-600 transition hover:bg-slate-100 hover:text-slate-900"
+                        >
+                            <ArrowLeft size={16} />
+                            Dashboard
+                        </button>
+                    </div>
+                </header>
+
+                {/* =================================================
+                    CHARGEMENT
+                ================================================= */}
+
+                {loading && (
+                    <div className="rounded-2xl border border-slate-200 bg-white p-12 text-center shadow-sm">
+                        <RefreshCw
+                            size={32}
+                            className="mx-auto mb-4 animate-spin text-sky-600"
+                        />
+                        <p className="text-sm text-slate-500">
+                            Chargement de vos analyses...
+                        </p>
+                    </div>
+                )}
+
+                {/* =================================================
+                    ERREUR
+                ================================================= */}
+
+                {!loading && error && (
+                    <div className="rounded-2xl border border-red-200 bg-red-50 p-8 text-center">
+                        <p className="font-medium text-red-600">{error}</p>
+                        <button
+                            type="button"
+                            onClick={loadAnalyses}
+                            className="mt-4 inline-flex items-center gap-2 rounded-lg bg-red-600 px-5 py-2 text-sm font-medium text-white transition hover:bg-red-700"
+                        >
+                            <RefreshCw size={15} />
+                            Réessayer
+                        </button>
+                    </div>
+                )}
+
+                {/* =================================================
+                    AUCUNE ANALYSE
+                ================================================= */}
+
+                {!loading && !error && total === 0 && (
+                    <div className="rounded-2xl border border-dashed border-slate-300 bg-white p-14 text-center shadow-sm">
+                        <div className="mx-auto mb-5 flex h-20 w-20 items-center justify-center rounded-full bg-sky-50 text-sky-300">
+                            <FlaskConical size={40} />
+                        </div>
+                        <h2 className="text-lg font-semibold text-slate-800">
+                            Aucune analyse
+                        </h2>
+                        <p className="mx-auto mt-2 max-w-sm text-sm text-slate-500">
+                            Vos résultats d'analyses médicales apparaîtront ici
+                            dès qu'un médecin les publiera.
+                        </p>
+                        <button
+                            type="button"
+                            onClick={() => navigate("/patient/dashboard")}
+                            className="mt-6 inline-flex items-center gap-2 rounded-xl bg-sky-600 px-5 py-2.5 text-sm font-medium text-white transition hover:bg-sky-700"
+                        >
+                            <ArrowLeft size={15} />
+                            Retour au tableau de bord
+                        </button>
+                    </div>
+                )}
+
+                {/* =================================================
+                    STATISTIQUES
+                ================================================= */}
+
+                {!loading && !error && total > 0 && (
+                    <div className="mb-8 grid gap-4 sm:grid-cols-3">
+                        <div className="flex items-center gap-4 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                            <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-sky-100 bg-sky-50 text-sky-600">
+                                <FlaskConical size={20} />
+                            </div>
+                            <div>
+                                <p className="text-2xl font-bold text-slate-900">
+                                    {total}
+                                </p>
+                                <p className="text-xs text-slate-500">
+                                    Analyses au total
+                                </p>
+                            </div>
+                        </div>
+
+                        <div className="flex items-center gap-4 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                            <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-emerald-100 bg-emerald-50 text-emerald-600">
+                                <CheckCircle size={20} />
+                            </div>
+                            <div>
+                                <p className="text-2xl font-bold text-slate-900">
+                                    {avecResultat}
+                                </p>
+                                <p className="text-xs text-slate-500">
+                                    Avec résultat disponible
+                                </p>
+                            </div>
+                        </div>
+
+                        <div className="flex items-center gap-4 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                            <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-amber-100 bg-amber-50 text-amber-600">
+                                <Clock size={20} />
+                            </div>
+                            <div>
+                                <p className="text-2xl font-bold text-slate-900">
+                                    {enAttente}
+                                </p>
+                                <p className="text-xs text-slate-500">
+                                    En attente de résultat
+                                </p>
+                            </div>
+                        </div>
+                    </div>
+                )}
+
+                {/* =================================================
+                    LISTE DES ANALYSES
+                ================================================= */}
+
+                {!loading && !error && total > 0 && (
+                    <div className="grid gap-6 md:grid-cols-2 xl:grid-cols-3">
+                        {analyses.map((analyse) => {
+                            const TypeIcon = getTypeIcon(analyse.type);
+                            const status = getStatusInfo(analyse.statut);
+                            const hasResult =
+                                analyse.resultat &&
+                                String(analyse.resultat).trim() !== "";
+
+                            return (
+                                <article
+                                    key={analyse.id}
+                                    className="group flex flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm transition-all duration-200 hover:-translate-y-1 hover:border-sky-200 hover:shadow-lg"
+                                >
+                                    {/* Bandeau supérieur */}
+                                    <div className="h-1.5 w-full bg-gradient-to-r from-sky-500 via-blue-500 to-indigo-500" />
+
+                                    <div className="flex flex-1 flex-col p-6">
+                                        {/* Titre + statut */}
+                                        <div className="flex items-start justify-between gap-3">
+                                            <div className="flex items-center gap-3">
+                                                <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-sky-100 bg-sky-50 text-sky-600">
+                                                    <TypeIcon size={20} />
+                                                </div>
+                                                <div>
+                                                    <h2 className="text-base font-bold leading-tight text-slate-900">
+                                                        {analyse.nom}
+                                                    </h2>
+                                                    <p className="mt-0.5 text-sm text-slate-500">
+                                                        {analyse.type || "Analyse médicale"}
+                                                    </p>
+                                                </div>
+                                            </div>
+                                            <span
+                                                className={`inline-flex shrink-0 items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-semibold ${status.cls}`}
+                                            >
+                                                <span
+                                                    className={`h-1.5 w-1.5 rounded-full ${status.dot}`}
+                                                />
+                                                {status.label}
+                                            </span>
+                                        </div>
+
+                                        {/* Date */}
+                                        <div className="mt-5 flex items-center gap-2">
+                                            <span className="inline-flex items-center gap-1.5 rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-600">
+                                                <Calendar size={13} />
+                                                {formatDate(analyse.date_examen)}
+                                            </span>
+                                        </div>
+
+                                        {/* Résultat */}
+                                        <div className="mt-4 flex-1 rounded-xl border border-slate-100 bg-slate-50 p-4">
+                                            <p className="mb-1.5 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-slate-500">
+                                                <ClipboardList size={13} />
+                                                Résultat
+                                            </p>
+                                            {hasResult ? (
+                                                <p className="whitespace-pre-wrap break-words text-sm leading-relaxed text-slate-700">
+                                                    {analyse.resultat}
+                                                </p>
+                                            ) : (
+                                                <p className="text-sm italic text-slate-400">
+                                                    Résultat en attente de publication.
+                                                </p>
+                                            )}
+                                        </div>
+                                    </div>
+                                </article>
+                            );
+                        })}
+                    </div>
+                )}
+            </div>
+        </div>
+    );
+}

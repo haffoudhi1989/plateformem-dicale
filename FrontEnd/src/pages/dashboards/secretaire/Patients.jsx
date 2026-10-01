@@ -1,0 +1,824 @@
+import React, { useEffect, useMemo, useState } from "react";
+import axios from "axios";
+import { useNavigate } from "react-router-dom";
+import {
+    Users,
+    Search,
+    ChevronLeft,
+    CalendarDays,
+    RefreshCw,
+    CreditCard,
+    Loader2,
+    Plus,
+    X,
+    CheckCircle2
+} from "lucide-react";
+
+const API_URL = "http://127.0.0.1:8000/api";
+
+export default function Patients() {
+    const navigate = useNavigate();
+    const [patients, setPatients] = useState([]);
+    const [loading, setLoading] = useState(true);
+    const [searchQuery, setSearchQuery] = useState("");
+
+    // =====================================================
+    // ENCAISSEMENT D'UN PAIEMENT
+    // =====================================================
+
+    const [showPaymentModal, setShowPaymentModal] =
+        useState(false);
+
+    const [selectedPatient, setSelectedPatient] =
+        useState(null);
+
+    const [paymentForm, setPaymentForm] = useState({
+        montant: "",
+        mode_paiement: "Espèces",
+        statut: "Payé",
+        date_paiement: new Date()
+            .toISOString()
+            .substring(0, 10),
+        description: "",
+    });
+
+    const [paymentSaving, setPaymentSaving] =
+        useState(false);
+
+    const [paymentError, setPaymentError] = useState("");
+
+    const [paymentSuccess, setPaymentSuccess] =
+        useState("");
+
+    const openPaymentModal = (patient) => {
+        setSelectedPatient(patient);
+
+        setPaymentForm({
+            montant: "",
+            mode_paiement: "Espèces",
+            statut: "Payé",
+            date_paiement: new Date()
+                .toISOString()
+                .substring(0, 10),
+            description: "",
+        });
+
+        setPaymentError("");
+
+        setShowPaymentModal(true);
+    };
+
+    /* ----- Historique des paiements d'un patient ----- */
+    const [showHistoryModal, setShowHistoryModal] = useState(false);
+    const [historyPatient, setHistoryPatient] = useState(null);
+    const [historyPaiements, setHistoryPaiements] = useState([]);
+    const [historyTotal, setHistoryTotal] = useState(0);
+    const [historyLoading, setHistoryLoading] = useState(false);
+    const [historyDateFilter, setHistoryDateFilter] = useState("");
+    const [historyError, setHistoryError] = useState("");
+
+    const openHistoryModal = async (patient) => {
+        setHistoryPatient(patient);
+        setHistoryPaiements([]);
+        setHistoryTotal(0);
+        setHistoryError("");
+        setHistoryDateFilter("");
+        setShowHistoryModal(true);
+        setHistoryLoading(true);
+
+        try {
+            const token =
+                localStorage.getItem("token") ||
+                sessionStorage.getItem("token");
+
+            const response = await axios.get(
+                `${API_URL}/patients/${patient.id}/paiements`,
+                {
+                    headers: {
+                        Authorization: `Bearer ${token}`,
+                        Accept: "application/json",
+                    },
+                }
+            );
+
+            setHistoryPaiements(response.data?.data || []);
+            setHistoryTotal(response.data?.total || 0);
+        } catch (error) {
+            console.error(error);
+            setHistoryError(
+                "Impossible de charger l'historique des paiements."
+            );
+        } finally {
+            setHistoryLoading(false);
+        }
+    };
+
+    const formatMontant = (montant) =>
+        `${Number(montant || 0).toFixed(3)} DT`;
+
+    const formatDatePaiement = (date) => {
+        if (!date) return "—";
+        const [a, m, j] = String(date).substring(0, 10).split("-");
+        return a && m && j ? `${j}/${m}/${a}` : date;
+    };
+
+    /* Un paiement sans statut est considéré payé (valeur par défaut en base).
+       Trois cas pris en compte : payé, en attente, non payé. */
+    const classePaiement = (paiement) => {
+        const statut = String(paiement?.statut || "Payé").trim().toLowerCase();
+
+        if (statut.includes("attente")) return "attente";
+
+        if (
+            statut.includes("non pay") ||
+            statut.includes("impay") ||
+            statut.includes("pas pay")
+        ) {
+            return "impaye";
+        }
+
+        if (statut.includes("pay")) return "paye";
+
+        return "impaye";
+    };
+
+    const sommePaiements = (liste) =>
+        liste.reduce(
+            (somme, paiement) => somme + Number(paiement.montant || 0),
+            0
+        );
+
+    /* Filtre par date (un jour précis) sur l'historique affiché */
+    const paiementsAffiches = historyDateFilter
+        ? historyPaiements.filter(
+              (paiement) =>
+                  String(paiement.date_paiement || "").substring(0, 10) ===
+                  historyDateFilter
+          )
+        : historyPaiements;
+
+    const totalPaye = sommePaiements(
+        paiementsAffiches.filter((paiement) => classePaiement(paiement) === "paye")
+    );
+
+    const totalAttente = sommePaiements(
+        paiementsAffiches.filter(
+            (paiement) => classePaiement(paiement) === "attente"
+        )
+    );
+
+    const totalImpaye = sommePaiements(
+        paiementsAffiches.filter((paiement) => classePaiement(paiement) === "impaye")
+    );
+
+    const handleEncaisserPayment = async (event) => {
+        event.preventDefault();
+
+        if (!selectedPatient) {
+            return;
+        }
+
+        setPaymentSaving(true);
+        setPaymentError("");
+
+        try {
+            const token =
+                localStorage.getItem("token");
+
+            const response = await axios.post(
+                `${API_URL}/paiements`,
+                {
+                    patient_id: selectedPatient.id,
+                    montant: paymentForm.montant,
+                    mode_paiement:
+                        paymentForm.mode_paiement,
+                    statut: paymentForm.statut,
+                    date_paiement:
+                        paymentForm.date_paiement || null,
+                    description:
+                        paymentForm.description,
+                },
+                {
+                    headers: {
+                        Authorization: `Bearer ${token}`,
+                        Accept: "application/json",
+                    },
+                }
+            );
+
+            setShowPaymentModal(false);
+
+            setPaymentSuccess(
+                response.data?.message ||
+                    "Paiement enregistré avec succès."
+            );
+
+            setTimeout(
+                () => setPaymentSuccess(""),
+                4000
+            );
+        } catch (err) {
+            const serverErrors =
+                err.response?.data?.errors;
+
+            const message = serverErrors
+                ? Object.values(serverErrors)
+                      .flat()
+                      .join(" ")
+                : err.response?.data?.message ||
+                  "Impossible d'enregistrer le paiement.";
+
+            setPaymentError(message);
+        } finally {
+            setPaymentSaving(false);
+        }
+    };
+
+    useEffect(() => {
+        chargerPatients();
+    }, []);
+
+    const chargerPatients = async () => {
+        try {
+            setLoading(true);
+            const token = localStorage.getItem("token");
+            if (!token) {
+                navigate("/login");
+                return;
+            }
+
+            const response = await axios.get(`${API_URL}/patients`, {
+                headers: {
+                    Authorization: `Bearer ${token}`,
+                    Accept: "application/json",
+                },
+            });
+
+            setPatients(response.data.data || []);
+        } catch (error) {
+            console.error("Erreur chargement patients :", error);
+            if (error.response?.status === 401) {
+                localStorage.removeItem("token");
+                localStorage.removeItem("user");
+                navigate("/login");
+            }
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    const patientsFiltres = useMemo(() => {
+        return patients.filter((p) => {
+            const fullName = `${p.prenom || ""} ${p.nom || ""}`.toLowerCase();
+            const email = (p.email || "").toLowerCase();
+            const phone = (p.telephone || "").toLowerCase();
+            const query = searchQuery.toLowerCase();
+            return (
+                !query ||
+                fullName.includes(query) ||
+                email.includes(query) ||
+                phone.includes(query)
+            );
+        });
+    }, [patients, searchQuery]);
+
+    if (loading) {
+        return (
+            <div className="flex items-center justify-center py-20">
+                <div className="bg-white border border-slate-200/80 rounded-3xl p-8 shadow-xl flex flex-col items-center text-center">
+                    <div className="w-12 h-12 border-4 border-violet-600 border-t-transparent rounded-full animate-spin mb-4" />
+                    <p className="text-sm font-bold text-slate-700">Chargement de la patientèle...</p>
+                </div>
+            </div>
+        );
+    }
+
+    return (
+        <div className="p-4 md:p-8 space-y-6 max-w-7xl mx-auto">
+            {/* EN-TÊTE SUPÉRIEUR — BANNIÈRE VERRE */}
+            <div className="relative overflow-hidden rounded-2xl border border-white/50 bg-white/60 backdrop-blur-md shadow-sm px-5 py-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                <div className="absolute -top-10 -right-8 h-32 w-32 rounded-full bg-emerald-200/30 blur-2xl pointer-events-none" />
+                <div className="relative">
+                    <div className="flex items-center gap-2 mb-1">
+                        <button
+                            type="button"
+                            onClick={() => navigate("/secretaire/dashboard")}
+                            className="inline-flex items-center gap-1 text-xs font-bold text-slate-500 hover:text-violet-600 transition cursor-pointer"
+                        >
+                            <ChevronLeft size={16} />
+                            Dashboard
+                        </button>
+                        <span className="text-slate-300">•</span>
+                        <span className="text-[11px] font-bold uppercase tracking-wider text-violet-600">
+                            Secrétariat Médical
+                        </span>
+                    </div>
+                    <h1 className="text-xl font-bold text-slate-900">
+                        Gestion des Patients
+                    </h1>
+                    <p className="text-sm text-slate-500 mt-0.5">
+                        Consultez la liste des dossiers patients et leurs coordonnées
+                    </p>
+                </div>
+
+                <div className="relative flex flex-wrap items-center gap-2.5">
+                  
+
+                    
+                </div>
+            </div>
+
+            {/* SUCCÈS */}
+
+            {paymentSuccess && (
+                <div className="flex items-center gap-2 bg-emerald-50 border border-emerald-200 rounded-2xl px-4 py-3 text-sm font-bold text-emerald-700">
+                    <CheckCircle2 size={18} />
+                    {paymentSuccess}
+                </div>
+            )}
+
+            {/* STATS RAPIDES */}
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                <div className="bg-white border border-slate-200/80 rounded-3xl p-5 shadow-sm">
+                    <p className="text-xs font-bold text-slate-400 uppercase tracking-wider">Total Patients</p>
+                    <p className="text-2xl font-black text-slate-900 mt-1">{patients.length}</p>
+                </div>
+                <div className="bg-white border border-slate-200/80 rounded-3xl p-5 shadow-sm">
+                    <p className="text-xs font-bold text-emerald-600 uppercase tracking-wider">Avec Téléphone</p>
+                    <p className="text-2xl font-black text-emerald-700 mt-1">
+                        {patients.filter((p) => p.telephone).length}
+                    </p>
+                </div>
+                <div className="bg-white border border-slate-200/80 rounded-3xl p-5 shadow-sm">
+                    <p className="text-xs font-bold text-violet-600 uppercase tracking-wider">Avec E-mail</p>
+                    <p className="text-2xl font-black text-violet-700 mt-1">
+                        {patients.filter((p) => p.email).length}
+                    </p>
+                </div>
+            </div>
+
+            {/* RECHERCHE */}
+            <div className="bg-white border border-slate-200/80 rounded-3xl p-4 shadow-sm">
+                <div className="relative">
+                    <Search size={16} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
+                    <input
+                        type="text"
+                        placeholder="Rechercher par nom, prénom, e-mail, téléphone..."
+                        value={searchQuery}
+                        onChange={(e) => setSearchQuery(e.target.value)}
+                        className="w-full pl-10 pr-4 py-2.5 bg-slate-50 border border-slate-200/80 rounded-2xl text-xs font-medium focus:outline-none focus:border-violet-500 focus:bg-white transition"
+                    />
+                </div>
+            </div>
+
+            {/* LISTE DES PATIENTS */}
+            <div className="bg-white border border-slate-200/80 rounded-3xl shadow-sm overflow-hidden">
+                {patientsFiltres.length === 0 ? (
+                    <div className="p-12 text-center">
+                        <div className="w-16 h-16 rounded-3xl bg-violet-50 text-violet-600 flex items-center justify-center mx-auto mb-3">
+                            <Users size={28} />
+                        </div>
+                        <h3 className="text-base font-black text-slate-800">Aucun patient trouvé</h3>
+                        <p className="text-xs text-slate-400 mt-1 max-w-sm mx-auto">
+                            Aucun dossier patient ne correspond à votre recherche actuelle.
+                        </p>
+                    </div>
+                ) : (
+                    <div className="overflow-x-auto">
+                        <table className="w-full text-left border-collapse">
+                            <thead>
+                                <tr className="border-b border-slate-100 bg-slate-50/70 text-[11px] font-extrabold uppercase tracking-wider text-slate-400">
+                                    <th className="px-6 py-4 text-right">Dossier</th>
+                                </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-100 text-xs">
+                                {patientsFiltres.map((patient) => {
+                                    return (
+                                        <tr key={patient.id} className="hover:bg-slate-50/80 transition-colors">
+                                            <td className="px-6 py-4 text-right">
+                                                <button
+                                                    type="button"
+                                                    onClick={() => openHistoryModal(patient)}
+                                                    title="Voir le dossier et l'historique des paiements"
+                                                    aria-label="Ouvrir le dossier du patient"
+                                                    className="w-9 h-9 inline-flex items-center justify-center rounded-xl bg-violet-50 text-violet-700 hover:bg-violet-100 transition active:scale-95 cursor-pointer"
+                                                >
+                                                    <Plus size={16} />
+                                                </button>
+                                            </td>
+                                        </tr>
+                                    );
+                                })}
+                            </tbody>
+                        </table>
+                    </div>
+                )}
+            </div>
+
+            {/* =================================================
+                MODAL ENCAISSEMENT
+            ================================================= */}
+
+            {showPaymentModal && selectedPatient && (
+                <div
+                    className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/50 backdrop-blur-sm"
+                    onClick={() => setShowPaymentModal(false)}
+                >
+                    <div
+                        className="w-full max-w-lg bg-white rounded-3xl shadow-2xl border border-slate-200 overflow-hidden"
+                        onClick={(event) =>
+                            event.stopPropagation()
+                        }
+                    >
+                        {/* En-tête */}
+                        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100">
+                            <div>
+                                <h3 className="text-base font-black text-slate-900">
+                                    Encaisser un paiement
+                                </h3>
+
+                                <p className="text-xs text-slate-400 mt-0.5">
+                                    {selectedPatient.prenom}{" "}
+                                    {selectedPatient.nom}
+                                </p>
+                            </div>
+
+                            <button
+                                type="button"
+                                onClick={() =>
+                                    setShowPaymentModal(false)
+                                }
+                                className="w-9 h-9 rounded-xl flex items-center justify-center text-slate-400 hover:bg-slate-100 hover:text-slate-700 transition"
+                                aria-label="Fermer"
+                            >
+                                <X size={20} />
+                            </button>
+                        </div>
+
+                        <form
+                            onSubmit={handleEncaisserPayment}
+                            className="px-6 py-5 space-y-4"
+                        >
+                            {/* Montant */}
+                            <div>
+                                <label className="block text-xs font-bold text-slate-600 mb-1.5">
+                                    Montant (DT) *
+                                </label>
+
+                                <input
+                                    type="number"
+                                    min="0"
+                                    step="0.001"
+                                    required
+                                    value={paymentForm.montant}
+                                    onChange={(event) =>
+                                        setPaymentForm({
+                                            ...paymentForm,
+                                            montant:
+                                                event.target.value,
+                                        })
+                                    }
+                                    placeholder="Ex : 50"
+                                    className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200/80 rounded-2xl text-sm font-medium focus:outline-none focus:border-violet-500 focus:bg-white transition"
+                                />
+                            </div>
+
+                            {/* Mode + Statut */}
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                                <div>
+                                    <label className="block text-xs font-bold text-slate-600 mb-1.5">
+                                        Mode de paiement *
+                                    </label>
+
+                                    <select
+                                        value={paymentForm.mode_paiement}
+                                        onChange={(event) =>
+                                            setPaymentForm({
+                                                ...paymentForm,
+                                                mode_paiement:
+                                                    event.target.value,
+                                            })
+                                        }
+                                        className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200/80 rounded-2xl text-sm font-medium focus:outline-none focus:border-violet-500 focus:bg-white transition"
+                                    >
+                                        <option>Espèces</option>
+                                        <option>Carte bancaire</option>
+                                        <option>Chèque</option>
+                                        <option>Virement</option>
+                                        <option>Autre</option>
+                                    </select>
+                                </div>
+
+                                <div>
+                                    <label className="block text-xs font-bold text-slate-600 mb-1.5">
+                                        Statut *
+                                    </label>
+
+                                    <select
+                                        value={paymentForm.statut}
+                                        onChange={(event) =>
+                                            setPaymentForm({
+                                                ...paymentForm,
+                                                statut:
+                                                    event.target.value,
+                                            })
+                                        }
+                                        className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200/80 rounded-2xl text-sm font-medium focus:outline-none focus:border-violet-500 focus:bg-white transition"
+                                    >
+                                        <option>Payé</option>
+                                        <option>En attente</option>
+                                        <option>Annulé</option>
+                                    </select>
+                                </div>
+                            </div>
+
+                            {/* Date */}
+                            <div>
+                                <label className="block text-xs font-bold text-slate-600 mb-1.5">
+                                    Date du paiement
+                                </label>
+
+                                <input
+                                    type="date"
+                                    value={paymentForm.date_paiement}
+                                    onChange={(event) =>
+                                        setPaymentForm({
+                                            ...paymentForm,
+                                            date_paiement:
+                                                event.target.value,
+                                        })
+                                    }
+                                    className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200/80 rounded-2xl text-sm font-medium focus:outline-none focus:border-violet-500 focus:bg-white transition"
+                                />
+                            </div>
+
+                            {/* Description */}
+                            <div>
+                                <label className="block text-xs font-bold text-slate-600 mb-1.5">
+                                    Description
+                                </label>
+
+                                <textarea
+                                    rows={2}
+                                    value={paymentForm.description}
+                                    onChange={(event) =>
+                                        setPaymentForm({
+                                            ...paymentForm,
+                                            description:
+                                                event.target.value,
+                                        })
+                                    }
+                                    placeholder="Ex : Consultation, analyse... (optionnel)"
+                                    className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200/80 rounded-2xl text-sm font-medium focus:outline-none focus:border-violet-500 focus:bg-white transition resize-none"
+                                />
+                            </div>
+
+                            {/* Erreur */}
+                            {paymentError && (
+                                <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-xl px-4 py-3">
+                                    {paymentError}
+                                </p>
+                            )}
+
+                            {/* Actions */}
+                            <div className="flex items-center justify-end gap-3 pt-2">
+                                <button
+                                    type="button"
+                                    onClick={() =>
+                                        setShowPaymentModal(false)
+                                    }
+                                    className="px-5 py-2.5 rounded-2xl border border-slate-200 text-slate-600 font-bold text-xs hover:bg-slate-50 transition"
+                                >
+                                    Annuler
+                                </button>
+
+                                <button
+                                    type="submit"
+                                    disabled={paymentSaving}
+                                    className="inline-flex items-center gap-2 px-5 py-2.5 rounded-2xl bg-violet-600 hover:bg-violet-700 text-white font-bold text-xs shadow-sm disabled:opacity-60 transition"
+                                >
+                                    <CreditCard size={15} />
+
+                                    {paymentSaving
+                                        ? "Enregistrement..."
+                                        : "Encaisser le paiement"}
+                                </button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            )}
+
+            {/* =================================================
+                MODAL HISTORIQUE DES PAIEMENTS (payés / non payés)
+            ================================================= */}
+
+            {showHistoryModal && historyPatient && (
+                <div
+                    className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/50 backdrop-blur-sm"
+                    onClick={() => setShowHistoryModal(false)}
+                >
+                    <div
+                        className="w-full max-w-2xl bg-white rounded-3xl shadow-2xl border border-slate-200 overflow-hidden"
+                        onClick={(event) => event.stopPropagation()}
+                    >
+                        {/* En-tête */}
+                        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100">
+                            <div>
+                                <h3 className="text-base font-black text-slate-900">
+                                    Dossier patient
+                                </h3>
+
+                                <p className="text-xs text-slate-400 mt-0.5">
+                                    {historyPatient.prenom} {historyPatient.nom}
+                                </p>
+                            </div>
+
+                            <button
+                                type="button"
+                                onClick={() => setShowHistoryModal(false)}
+                                className="w-9 h-9 rounded-xl flex items-center justify-center text-slate-400 hover:bg-slate-100 hover:text-slate-700 transition"
+                                aria-label="Fermer"
+                            >
+                                <X size={20} />
+                            </button>
+                        </div>
+
+                        {/* Contenu */}
+                        <div className="px-6 py-5 space-y-4 max-h-[65vh] overflow-y-auto">
+                            {/* Informations du patient */}
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-3 bg-slate-50/60 border border-slate-100 rounded-2xl px-4 py-3">
+                                {[
+                                    ["Email", historyPatient.email || "Non renseigné"],
+                                    ["Téléphone", historyPatient.telephone || "Non renseigné"],
+                                    [
+                                        "Date de naissance",
+                                        historyPatient.date_naissance
+                                            ? formatDatePaiement(historyPatient.date_naissance)
+                                            : "Non renseigné",
+                                    ],
+                                    ["Sexe", historyPatient.sexe || "Non renseigné"],
+                                    ["Groupe sanguin", historyPatient.groupe_sanguin || "Non renseigné"],
+                                    ["Adresse", historyPatient.adresse || "Non renseigné"],
+                                    ["Allergies", historyPatient.allergies || "Non renseigné"],
+                                    ["Maladies chroniques", historyPatient.maladies_chroniques || "Non renseigné"],
+                                    ["Antécédents", historyPatient.antecedents || "Non renseigné"],
+                                ].map(([label, valeur]) => (
+                                    <div key={label}>
+                                        <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                                            {label}
+                                        </p>
+
+                                        <p className="text-xs font-semibold text-slate-700 mt-0.5 break-words">
+                                            {valeur}
+                                        </p>
+                                    </div>
+                                ))}
+                            </div>
+
+                            <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
+                                <p className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
+                                    Historique des paiements
+                                </p>
+
+                                {/* Filtre par date */}
+                                <div className="flex items-center gap-1.5 bg-slate-50 border border-slate-200/80 rounded-2xl px-2.5 py-1.5">
+                                    <CalendarDays
+                                        size={14}
+                                        className="text-slate-400 shrink-0"
+                                    />
+
+                                    <input
+                                        type="date"
+                                        value={historyDateFilter}
+                                        onChange={(event) =>
+                                            setHistoryDateFilter(event.target.value)
+                                        }
+                                        aria-label="Filtrer les paiements par date"
+                                        title="Filtrer les paiements par date"
+                                        className="bg-transparent text-xs font-semibold text-slate-700 outline-none cursor-pointer"
+                                    />
+
+                                    {historyDateFilter && (
+                                        <button
+                                            type="button"
+                                            onClick={() => setHistoryDateFilter("")}
+                                            aria-label="Effacer la date"
+                                            className="w-5 h-5 inline-flex items-center justify-center rounded-full text-slate-400 hover:text-slate-600 hover:bg-slate-200 transition shrink-0 cursor-pointer"
+                                        >
+                                            <X size={13} />
+                                        </button>
+                                    )}
+                                </div>
+                            </div>
+
+                            {historyLoading && (
+                                <div className="flex items-center justify-center py-10">
+                                    <Loader2 size={22} className="animate-spin text-violet-600" />
+                                </div>
+                            )}
+
+                            {!historyLoading && historyError && (
+                                <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-2xl px-4 py-3">
+                                    {historyError}
+                                </p>
+                            )}
+
+                            {!historyLoading && !historyError && paiementsAffiches.length === 0 && (
+                                <p className="text-sm text-slate-500 text-center py-8">
+                                    {historyDateFilter
+                                        ? "Aucun paiement à cette date."
+                                        : "Aucun paiement enregistré pour ce patient."}
+                                </p>
+                            )}
+
+                            {!historyLoading && !historyError && paiementsAffiches.length > 0 && (
+                                <div className="divide-y divide-slate-100 border border-slate-100 rounded-2xl overflow-hidden">
+                                    {paiementsAffiches.map((paiement) => (
+                                        <div
+                                            key={paiement.id}
+                                            className="flex items-center justify-between gap-3 px-4 py-3 bg-white"
+                                        >
+                                            <div>
+                                                <p className="text-xs font-black text-slate-800">
+                                                    {formatDatePaiement(paiement.date_paiement)}
+                                                    {paiement.mode_paiement ? ` · ${paiement.mode_paiement}` : ""}
+                                                </p>
+
+                                                <p className="text-[11px] text-slate-400 mt-0.5">
+                                                    {historyPatient.prenom} {historyPatient.nom}
+                                                    {paiement.description ? ` — ${paiement.description}` : ""}
+                                                </p>
+                                            </div>
+
+                                            <div className="text-right shrink-0">
+                                                <p className="text-xs font-black text-slate-900">
+                                                    {formatMontant(paiement.montant)}
+                                                </p>
+
+                                                <span
+                                                    className={`inline-flex items-center text-[10px] font-bold px-2.5 py-0.5 rounded-full mt-1 ${
+                                                        classePaiement(paiement) === "paye"
+                                                            ? "bg-emerald-50 text-emerald-700"
+                                                            : classePaiement(paiement) === "attente"
+                                                              ? "bg-amber-50 text-amber-700"
+                                                              : "bg-rose-50 text-rose-700"
+                                                    }`}
+                                                >
+                                                    {paiement.statut || "Payé"}
+                                                </span>
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
+                        </div>
+
+                        {/* Pied : total payé / restant */}
+                        <div className="px-6 py-4 border-t border-slate-100 bg-slate-50/60 flex flex-wrap items-center justify-between gap-4">
+                            <div className="flex flex-wrap items-center gap-7">
+                                <div>
+                                    <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                                        Total payé
+                                    </p>
+
+                                    <p className="text-lg font-black text-emerald-700">
+                                        {formatMontant(totalPaye)}
+                                    </p>
+                                </div>
+
+                                <div>
+                                    <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                                        En attente
+                                    </p>
+
+                                    <p className="text-lg font-black text-amber-600">
+                                        {formatMontant(totalAttente)}
+                                    </p>
+                                </div>
+
+                                <div>
+                                    <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                                        Non payé
+                                    </p>
+
+                                    <p className="text-lg font-black text-rose-600">
+                                        {formatMontant(totalImpaye)}
+                                    </p>
+                                </div>
+                            </div>
+
+                            <button
+                                type="button"
+                                onClick={() => setShowHistoryModal(false)}
+                                className="px-5 py-2.5 rounded-2xl bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs transition cursor-pointer"
+                            >
+                                Fermer
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+        </div>
+    );
+}

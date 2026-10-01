@@ -1,0 +1,490 @@
+import React, { useState } from "react";
+import { useNavigate } from "react-router-dom";
+import axios from "axios";
+import {
+    AlertCircle,
+    CheckCircle2,
+    ChevronLeft,
+    Eye,
+    EyeOff,
+    Loader2,
+    UserPlus,
+    Users,
+} from "lucide-react";
+
+const API_URL = "http://127.0.0.1:8000/api";
+
+const FORMULAIRE_VIDE = {
+    nom: "",
+    prenom: "",
+    email: "",
+    telephone: "",
+    date_naissance: "",
+    sexe: "Homme",
+    adresse: "",
+    groupe_sanguin: "",
+    allergies: "",
+    maladies_chroniques: "",
+    antecedents: "",
+    password: "",
+    password_confirmation: "",
+};
+
+const GROUPES_SANGUINS = ["A+", "A-", "B+", "B-", "AB+", "AB-", "O+", "O-"];
+
+export default function AjouterPatient() {
+    const navigate = useNavigate();
+
+    const [formData, setFormData] = useState(FORMULAIRE_VIDE);
+    const [erreurs, setErreurs] = useState({});
+    const [erreurGlobale, setErreurGlobale] = useState("");
+    const [succes, setSucces] = useState(null);
+    const [saving, setSaving] = useState(false);
+    const [voirMotDePasse, setVoirMotDePasse] = useState(false);
+
+    const getToken = () =>
+        localStorage.getItem("token") || sessionStorage.getItem("token");
+
+    const enTete = () => ({
+        Authorization: `Bearer ${getToken()}`,
+        Accept: "application/json",
+    });
+
+    const handleChange = (event) => {
+        const { name, value } = event.target;
+
+        setFormData((prev) => ({ ...prev, [name]: value }));
+        setErreurs((prev) => ({ ...prev, [name]: undefined }));
+    };
+
+    const handleSubmit = async (event) => {
+        event.preventDefault();
+
+        setErreurGlobale("");
+        setErreurs({});
+        setSucces(null);
+
+        // Contrôles locaux avant l'appel API
+        const controles = {};
+
+        if (!formData.nom.trim()) controles.nom = ["Le nom est obligatoire."];
+        if (!formData.prenom.trim()) controles.prenom = ["Le prénom est obligatoire."];
+        if (!formData.email.trim()) controles.email = ["L'email est obligatoire."];
+        if (!formData.password || formData.password.length < 8) {
+            controles.password = ["Le mot de passe doit contenir au moins 8 caractères."];
+        }
+        if (formData.password !== formData.password_confirmation) {
+            controles.password_confirmation = ["Les deux mots de passe ne correspondent pas."];
+        }
+
+        if (Object.keys(controles).length > 0) {
+            setErreurs(controles);
+            return;
+        }
+
+        setSaving(true);
+
+        try {
+            const { password_confirmation, ...payload } = formData;
+
+            const response = await axios.post(
+                `${API_URL}/patients`,
+                payload,
+                { headers: enTete() }
+            );
+
+            setSucces(response.data);
+            setFormData(FORMULAIRE_VIDE);
+            window.scrollTo({ top: 0, behavior: "smooth" });
+        } catch (error) {
+            if (error.response?.status === 422) {
+                setErreurs(error.response.data.errors || {});
+                setErreurGlobale(
+                    error.response.data.message ||
+                        "Certaines informations sont invalides."
+                );
+            } else if (error.response?.status === 401) {
+                navigate("/login");
+            } else {
+                setErreurGlobale(
+                    error.response?.data?.message ||
+                        "Impossible d'enregistrer le patient pour le moment."
+                );
+            }
+        } finally {
+            setSaving(false);
+        }
+    };
+
+    const ErreurChamp = ({ champ }) =>
+        erreurs?.[champ] ? (
+            <p className="text-[11px] font-bold text-rose-600 mt-1">
+                {erreurs[champ][0]}
+            </p>
+        ) : null;
+
+    const inputClass = (champ) =>
+        `w-full px-4 py-2.5 bg-slate-50 border rounded-2xl text-sm font-medium focus:outline-none focus:bg-white transition ${
+            erreurs?.[champ]
+                ? "border-rose-400 focus:border-rose-500"
+                : "border-slate-200/80 focus:border-violet-500"
+        }`;
+
+    return (
+        <div className="p-4 md:p-8 space-y-6 max-w-7xl mx-auto">
+            {/* EN-TÊTE SUPÉRIEUR — BANNIÈRE VERRE */}
+            <div className="relative overflow-hidden rounded-2xl border border-white/50 bg-white/60 backdrop-blur-md shadow-sm px-5 py-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                <div className="absolute -top-10 -right-8 h-32 w-32 rounded-full bg-emerald-200/30 blur-2xl pointer-events-none" />
+                <div className="relative">
+                    <div className="flex items-center gap-2 mb-1">
+                        <button
+                            type="button"
+                            onClick={() => navigate("/secretaire/dashboard")}
+                            className="inline-flex items-center gap-1 text-xs font-bold text-slate-500 hover:text-violet-600 transition cursor-pointer"
+                        >
+                            <ChevronLeft size={16} />
+                            Dashboard
+                        </button>
+
+                        <span className="text-slate-300">•</span>
+
+                        <span className="text-[11px] font-bold uppercase tracking-wider text-violet-600">
+                            Secrétariat Médical
+                        </span>
+                    </div>
+
+                    <h1 className="text-xl font-bold text-slate-900">
+                        Ajouter un patient
+                    </h1>
+
+                    <p className="text-sm text-slate-500 mt-0.5">
+                        Créez le dossier du patient et son compte de connexion en une seule fois
+                    </p>
+                </div>
+
+                <div className="relative flex flex-wrap items-center gap-2.5">
+                    <button
+                        type="button"
+                        onClick={() => navigate("/secretaire/patients")}
+                        className="inline-flex items-center gap-2 px-3.5 py-2.5 rounded-2xl bg-white hover:bg-violet-50 border border-slate-200 hover:border-violet-200 text-slate-700 hover:text-violet-700 font-bold text-xs shadow-sm transition active:scale-95 cursor-pointer"
+                    >
+                        <Users size={15} className="text-slate-400" />
+                        <span>Liste des patients</span>
+                    </button>
+                </div>
+            </div>
+
+            {/* SUCCÈS */}
+            {succes && (
+                <div className="bg-emerald-50 border border-emerald-200 rounded-3xl p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                    <div className="flex items-start gap-3">
+                        <div className="w-10 h-10 rounded-2xl bg-emerald-100 text-emerald-600 flex items-center justify-center shrink-0">
+                            <CheckCircle2 size={20} />
+                        </div>
+
+                        <div>
+                            <p className="text-sm font-black text-emerald-800">
+                                Patient enregistré avec succès
+                            </p>
+                            <p className="text-xs text-emerald-700 mt-0.5">
+                                {succes?.data?.prenom} {succes?.data?.nom} — compte de
+                                connexion créé
+                                {succes?.login?.email
+                                    ? ` (${succes.login.email})`
+                                    : ""}
+                                .
+                            </p>
+                        </div>
+                    </div>
+
+                    <button
+                        type="button"
+                        onClick={() => navigate("/secretaire/patients")}
+                        className="inline-flex items-center gap-2 px-4 py-2.5 rounded-2xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold transition cursor-pointer shrink-0"
+                    >
+                        Voir la liste des patients
+                    </button>
+                </div>
+            )}
+
+            {/* ERREUR GLOBALE */}
+            {erreurGlobale && (
+                <div className="bg-rose-50 border border-rose-200 rounded-3xl p-4 flex items-start gap-3">
+                    <AlertCircle size={18} className="text-rose-600 shrink-0 mt-0.5" />
+                    <p className="text-xs font-bold text-rose-700">{erreurGlobale}</p>
+                </div>
+            )}
+
+            {/* FORMULAIRE */}
+            <form
+                onSubmit={handleSubmit}
+                className="bg-white border border-slate-200/80 rounded-3xl shadow-sm overflow-hidden"
+            >
+                {/* IDENTITÉ */}
+                <div className="px-6 py-4 border-b border-slate-100 flex items-center gap-2">
+                    <UserPlus size={16} className="text-violet-600" />
+                    <h2 className="text-sm font-black text-slate-800">
+                        Identité du patient
+                    </h2>
+                </div>
+
+                <div className="px-6 py-5 grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                        <label className="block text-xs font-bold text-slate-600 mb-1.5">
+                            Nom *
+                        </label>
+                        <input
+                            type="text"
+                            name="nom"
+                            value={formData.nom}
+                            onChange={handleChange}
+                            placeholder="Ex : Trabelsi"
+                            className={inputClass("nom")}
+                        />
+                        <ErreurChamp champ="nom" />
+                    </div>
+
+                    <div>
+                        <label className="block text-xs font-bold text-slate-600 mb-1.5">
+                            Prénom *
+                        </label>
+                        <input
+                            type="text"
+                            name="prenom"
+                            value={formData.prenom}
+                            onChange={handleChange}
+                            placeholder="Ex : Amira"
+                            className={inputClass("prenom")}
+                        />
+                        <ErreurChamp champ="prenom" />
+                    </div>
+
+                    <div>
+                        <label className="block text-xs font-bold text-slate-600 mb-1.5">
+                            Date de naissance
+                        </label>
+                        <input
+                            type="date"
+                            name="date_naissance"
+                            value={formData.date_naissance}
+                            onChange={handleChange}
+                            className={inputClass("date_naissance")}
+                        />
+                        <ErreurChamp champ="date_naissance" />
+                    </div>
+
+                    <div>
+                        <label className="block text-xs font-bold text-slate-600 mb-1.5">
+                            Sexe
+                        </label>
+                        <select
+                            name="sexe"
+                            value={formData.sexe}
+                            onChange={handleChange}
+                            className={inputClass("sexe")}
+                        >
+                            <option value="Homme">Homme</option>
+                            <option value="Femme">Femme</option>
+                        </select>
+                        <ErreurChamp champ="sexe" />
+                    </div>
+
+                    <div>
+                        <label className="block text-xs font-bold text-slate-600 mb-1.5">
+                            Téléphone
+                        </label>
+                        <input
+                            type="text"
+                            name="telephone"
+                            value={formData.telephone}
+                            onChange={handleChange}
+                            placeholder="Ex : 20 123 456"
+                            className={inputClass("telephone")}
+                        />
+                        <ErreurChamp champ="telephone" />
+                    </div>
+
+                    <div>
+                        <label className="block text-xs font-bold text-slate-600 mb-1.5">
+                            Email *
+                        </label>
+                        <input
+                            type="email"
+                            name="email"
+                            value={formData.email}
+                            onChange={handleChange}
+                            placeholder="patient@email.com"
+                            className={inputClass("email")}
+                        />
+                        <ErreurChamp champ="email" />
+                    </div>
+
+                    <div className="md:col-span-2">
+                        <label className="block text-xs font-bold text-slate-600 mb-1.5">
+                            Adresse
+                        </label>
+                        <textarea
+                            name="adresse"
+                            rows={2}
+                            value={formData.adresse}
+                            onChange={handleChange}
+                            placeholder="Rue, ville, code postal"
+                            className={inputClass("adresse")}
+                        />
+                        <ErreurChamp champ="adresse" />
+                    </div>
+                </div>
+
+                {/* INFORMATIONS MÉDICALES */}
+                <div className="px-6 py-4 border-y border-slate-100 bg-slate-50/60">
+                    <h2 className="text-sm font-black text-slate-800">
+                        Informations médicales
+                    </h2>
+                </div>
+
+                <div className="px-6 py-5 grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                        <label className="block text-xs font-bold text-slate-600 mb-1.5">
+                            Groupe sanguin
+                        </label>
+                        <select
+                            name="groupe_sanguin"
+                            value={formData.groupe_sanguin}
+                            onChange={handleChange}
+                            className={inputClass("groupe_sanguin")}
+                        >
+                            <option value="">— Non renseigné —</option>
+                            {GROUPES_SANGUINS.map((groupe) => (
+                                <option key={groupe} value={groupe}>
+                                    {groupe}
+                                </option>
+                            ))}
+                        </select>
+                        <ErreurChamp champ="groupe_sanguin" />
+                    </div>
+
+                    <div>
+                        <label className="block text-xs font-bold text-slate-600 mb-1.5">
+                            Allergies
+                        </label>
+                        <input
+                            type="text"
+                            name="allergies"
+                            value={formData.allergies}
+                            onChange={handleChange}
+                            placeholder="Ex : pénicilline, arachides"
+                            className={inputClass("allergies")}
+                        />
+                        <ErreurChamp champ="allergies" />
+                    </div>
+
+                    <div>
+                        <label className="block text-xs font-bold text-slate-600 mb-1.5">
+                            Maladies chroniques
+                        </label>
+                        <textarea
+                            name="maladies_chroniques"
+                            rows={2}
+                            value={formData.maladies_chroniques}
+                            onChange={handleChange}
+                            placeholder="Ex : diabète, hypertension"
+                            className={inputClass("maladies_chroniques")}
+                        />
+                        <ErreurChamp champ="maladies_chroniques" />
+                    </div>
+
+                    <div>
+                        <label className="block text-xs font-bold text-slate-600 mb-1.5">
+                            Antécédents
+                        </label>
+                        <textarea
+                            name="antecedents"
+                            rows={2}
+                            value={formData.antecedents}
+                            onChange={handleChange}
+                            placeholder="Ex : appendicectomie (2020)"
+                            className={inputClass("antecedents")}
+                        />
+                        <ErreurChamp champ="antecedents" />
+                    </div>
+                </div>
+
+                {/* COMPTE DE CONNEXION */}
+                <div className="px-6 py-4 border-y border-slate-100 bg-slate-50/60">
+                    <h2 className="text-sm font-black text-slate-800">
+                        Compte de connexion du patient
+                    </h2>
+                    <p className="text-[11px] text-slate-400 mt-0.5">
+                        Le patient utilisera cet email et ce mot de passe pour accéder à son espace.
+                    </p>
+                </div>
+
+                <div className="px-6 py-5 grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                        <label className="block text-xs font-bold text-slate-600 mb-1.5">
+                            Mot de passe * (8 caractères minimum)
+                        </label>
+                        <div className="relative">
+                            <input
+                                type={voirMotDePasse ? "text" : "password"}
+                                name="password"
+                                value={formData.password}
+                                onChange={handleChange}
+                                placeholder="••••••••"
+                                className={inputClass("password")}
+                            />
+                            <button
+                                type="button"
+                                onClick={() => setVoirMotDePasse((v) => !v)}
+                                className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-violet-600 transition cursor-pointer"
+                                aria-label="Afficher ou masquer le mot de passe"
+                            >
+                                {voirMotDePasse ? <EyeOff size={16} /> : <Eye size={16} />}
+                            </button>
+                        </div>
+                        <ErreurChamp champ="password" />
+                    </div>
+
+                    <div>
+                        <label className="block text-xs font-bold text-slate-600 mb-1.5">
+                            Confirmation du mot de passe *
+                        </label>
+                        <input
+                            type={voirMotDePasse ? "text" : "password"}
+                            name="password_confirmation"
+                            value={formData.password_confirmation}
+                            onChange={handleChange}
+                            placeholder="••••••••"
+                            className={inputClass("password_confirmation")}
+                        />
+                        <ErreurChamp champ="password_confirmation" />
+                    </div>
+                </div>
+
+                {/* ACTIONS */}
+                <div className="px-6 py-4 border-t border-slate-100 bg-slate-50/60 flex flex-col sm:flex-row sm:items-center justify-end gap-3">
+                    <button
+                        type="button"
+                        onClick={() => navigate("/secretaire/patients")}
+                        className="inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-2xl bg-white hover:bg-slate-100 border border-slate-200 text-slate-600 text-xs font-bold transition cursor-pointer"
+                    >
+                        Annuler
+                    </button>
+
+                    <button
+                        type="submit"
+                        disabled={saving}
+                        className="inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-2xl bg-violet-600 hover:bg-violet-700 disabled:opacity-60 disabled:cursor-not-allowed text-white text-xs font-bold transition cursor-pointer"
+                    >
+                        {saving ? (
+                            <Loader2 size={16} className="animate-spin" />
+                        ) : (
+                            <UserPlus size={16} />
+                        )}
+                        {saving ? "Enregistrement..." : "Enregistrer le patient"}
+                    </button>
+                </div>
+            </form>
+        </div>
+    );
+}
